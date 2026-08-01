@@ -1,0 +1,4 @@
+User-Agent: *
+Allow: /
+
+Sitemap: https://sudhev1881-eng.github.io/daily-builds/sitemap.xml
