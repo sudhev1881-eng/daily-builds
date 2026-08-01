@@ -20,7 +20,8 @@ function run(command) {
     env: {
       ...process.env,
       NEXT_PUBLIC_STATIC_EXPORT: "1",
-      NEXT_PUBLIC_BASE_PATH: process.env.NEXT_PUBLIC_BASE_PATH || "/daily-builds",
+      NEXT_PUBLIC_BASE_PATH: process.env.NEXT_PUBLIC_BASE_PATH || "",
+      NEXT_PUBLIC_ASSET_PREFIX: process.env.NEXT_PUBLIC_ASSET_PREFIX || ".",
       NEXT_PUBLIC_APP_URL:
         process.env.NEXT_PUBLIC_APP_URL ||
         "https://sudhev1881-eng.github.io/daily-builds",

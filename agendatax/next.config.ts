@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH?.replace(/\/$/, "") || "";
+const assetPrefix =
+  process.env.NEXT_PUBLIC_ASSET_PREFIX?.replace(/\/$/, "") || basePath || "";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
@@ -9,7 +11,7 @@ const nextConfig: NextConfig = {
     ? {
         output: "export" as const,
         basePath: basePath || undefined,
-        assetPrefix: basePath || undefined,
+        assetPrefix: assetPrefix || undefined,
         images: { unoptimized: true },
       }
     : {}),

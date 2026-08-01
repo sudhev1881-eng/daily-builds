@@ -9,16 +9,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages-agendatax
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,21 +30,39 @@ jobs:
           cache-dependency-path: agendatax/package-lock.json
       - run: npm ci
       - run: npm run verify
-      - run: npm run build:static
-        env:
-          NEXT_PUBLIC_STATIC_EXPORT: "1"
-          NEXT_PUBLIC_BASE_PATH: /daily-builds
-          NEXT_PUBLIC_APP_URL: https://sudhev1881-eng.github.io/daily-builds
-      - uses: actions/upload-pages-artifact@v3
+      - name: Build static site
+        run: |
+          node <<'NODE'
+          import { execSync } from "node:child_process";
+          import { existsSync, renameSync, rmSync, writeFileSync } from "node:fs";
+          const api = "src/app/api";
+          const stash = ".api-stash";
+          if (existsSync(stash)) rmSync(stash, { recursive: true, force: true });
+          if (existsSync(api)) renameSync(api, stash);
+          try {
+            execSync("npx next build", {
+              stdio: "inherit",
+              env: {
+                ...process.env,
+                NEXT_PUBLIC_STATIC_EXPORT: "1",
+                NEXT_PUBLIC_BASE_PATH: "",
+                NEXT_PUBLIC_ASSET_PREFIX: ".",
+                NEXT_PUBLIC_APP_URL:
+                  "https://sudhev1881-eng.github.io/daily-builds",
+              },
+            });
+            writeFileSync("out/.nojekyll", "");
+          } finally {
+            if (existsSync(stash)) {
+              if (existsSync(api)) rmSync(api, { recursive: true, force: true });
+              renameSync(stash, api);
+            }
+          }
+          NODE
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: agendatax/out
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: agendatax/out
+          force_orphan: true
+          enable_jekyll: false

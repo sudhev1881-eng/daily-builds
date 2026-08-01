@@ -4,7 +4,7 @@
 
 AgendaTax estimates the annual salary cost of a recurring meeting from attendee compensation, duration, and frequency — so teams can make calendar decisions with numbers, not vibes.
 
-![AgendaTax hero and calculator](./docs/screenshot.png)
+![AgendaTax hero and calculator](./docs/screenshot.webp)
 
 ## Problem Solved
 
@@ -62,9 +62,15 @@ See `.env.example`.
 
 ## Deployment URL
 
-Live: _pending deploy — will be updated after Vercel/GitHub Pages publish_
+Live: [https://economy-palestinian-reservoir-maintaining.trycloudflare.com](https://economy-palestinian-reservoir-maintaining.trycloudflare.com)
+
+Static artifacts are published to the [`gh-pages`](https://github.com/sudhev1881-eng/daily-builds/tree/gh-pages) branch. Once GitHub Pages is enabled for that branch, the durable project URL will be:
+
+[https://sudhev1881-eng.github.io/daily-builds/](https://sudhev1881-eng.github.io/daily-builds/)
 
 Repository: [https://github.com/sudhev1881-eng/daily-builds](https://github.com/sudhev1881-eng/daily-builds)
+
+CI: `.github/workflows/deploy-agendatax.yml`
 
 ## Project Structure
 
