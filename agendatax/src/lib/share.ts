@@ -35,9 +35,12 @@ export function decodeMeeting(encoded: string): MeetingInput | null {
 }
 
 export function buildShareUrl(meeting: MeetingInput, origin?: string): string {
+  const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/$/, "");
   const base =
     origin ??
-    (typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
+    (typeof window !== "undefined"
+      ? `${window.location.origin}${basePath}`
+      : `http://localhost:3000${basePath}`);
   return `${base}/#m=${encodeMeeting(meeting)}`;
 }
 

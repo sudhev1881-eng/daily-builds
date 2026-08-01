@@ -40,7 +40,7 @@ export default function Home() {
           <aside className="hero-visual" aria-hidden="true">
             <div className="hero-visual-inner">
               <p className="label">Sample weekly sync</p>
-              <p className="big-number">$48.7k</p>
+              <p className="big-number">$11.9k</p>
               <div className="meta">
                 <span>4 attendees · 45 min</span>
                 <span>per year</span>

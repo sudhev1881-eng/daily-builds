@@ -16,7 +16,7 @@ import {
   FREQUENCY_META,
   ROLE_SALARIES,
 } from "@/lib/presets";
-import { buildShareUrl, decodeMeeting } from "@/lib/share";
+import { buildShareUrl, decodeMeeting, meetingToMarkdown } from "@/lib/share";
 import {
   clearMeeting,
   createDefaultMeeting,
@@ -159,21 +159,29 @@ export function CalculatorApp() {
     setStatus({ type: "info", text: "Generating Markdown report…" });
 
     try {
-      const response = await fetch("/api/report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(meeting),
-      });
-      const data = (await response.json()) as {
-        markdown?: string;
-        error?: string;
-      };
+      let markdown: string | null = null;
 
-      if (!response.ok || !data.markdown) {
-        throw new Error(data.error || "Export failed");
+      try {
+        const response = await fetch("/api/report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(meeting),
+        });
+        if (response.ok) {
+          const data = (await response.json()) as { markdown?: string };
+          markdown = data.markdown ?? null;
+        }
+      } catch {
+        // Static hosts may not expose the API route — fall back locally.
       }
 
-      const blob = new Blob([data.markdown], { type: "text/markdown" });
+      if (!markdown) {
+        markdown = meetingToMarkdown(meeting, costs, (n) =>
+          formatMoney(n, meeting.currency),
+        );
+      }
+
+      const blob = new Blob([markdown], { type: "text/markdown" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;

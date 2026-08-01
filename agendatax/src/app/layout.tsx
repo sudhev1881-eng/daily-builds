@@ -16,7 +16,7 @@ const figtree = Figtree({
 
 const siteUrl =
   process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
-  "https://agendatax.vercel.app";
+  "https://sudhev1881-eng.github.io/daily-builds";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
