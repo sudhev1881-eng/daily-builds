@@ -40,6 +40,10 @@ export function Dashboard() {
   const personVisible = reading?.person_visible ?? false;
   const personMoving = roomStatus === "HUMAN MOVING";
 
+  // Stable person coordinates — only pass live position when person is visible
+  const displayX = personVisible ? (reading?.x ?? currentRoom.width / 2) : currentRoom.width / 2;
+  const displayY = personVisible ? (reading?.y ?? currentRoom.height / 2) : currentRoom.height / 2;
+
   useEffect(() => {
     if (!reading) return;
 
@@ -125,8 +129,8 @@ export function Dashboard() {
         <div className="relative min-h-[300px] lg:row-span-2">
           <RoomVisualization
             room={currentRoom}
-            personX={reading?.x ?? currentRoom.width / 2}
-            personY={reading?.y ?? currentRoom.height / 2}
+            personX={displayX}
+            personY={displayY}
             personVisible={personVisible && !isCalibrating}
             personMoving={personMoving}
             direction={reading?.direction ?? null}
