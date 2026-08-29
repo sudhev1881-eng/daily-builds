@@ -7,6 +7,18 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class RoomStatus(str, Enum):
+    BOOTING = "BOOTING"
+    BASELINE_ESTABLISHED = "BASELINE ESTABLISHED"
+    ROOM_EMPTY = "ROOM EMPTY"
+    OCCUPIED_STATIONARY = "OCCUPIED — STATIONARY"
+    HUMAN_MOVING = "HUMAN MOVING"
+    ENVIRONMENTAL_ACTIVITY = "ENVIRONMENTAL ACTIVITY"
+    ENVIRONMENTAL_CHANGE = "ENVIRONMENTAL CHANGE DETECTED"
+    NOISE_IGNORE = "NOISE / IGNORE"
+
+
+# Legacy alias kept for backward compatibility in frontend mapping
 class DetectionStatus(str, Enum):
     NO_PERSON = "No Person Detected"
     PERSON = "Person Detected"
@@ -48,6 +60,9 @@ class ProcessedReading(BaseModel):
     velocity: float = Field(ge=0.0)
     direction: Optional[float] = None
     status: DetectionStatus
+    room_status: RoomStatus
+    person_visible: bool = False
+    calibration_remaining_sec: Optional[float] = None
     csi_waveform: list[float] = Field(default_factory=list)
     simulation_mode: bool = True
     room: RoomConfig

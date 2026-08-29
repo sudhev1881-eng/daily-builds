@@ -3,6 +3,16 @@ export type DetectionStatus =
   | "Person Detected"
   | "Movement Detected";
 
+export type RoomStatus =
+  | "BOOTING"
+  | "BASELINE ESTABLISHED"
+  | "ROOM EMPTY"
+  | "OCCUPIED — STATIONARY"
+  | "HUMAN MOVING"
+  | "ENVIRONMENTAL ACTIVITY"
+  | "ENVIRONMENTAL CHANGE DETECTED"
+  | "NOISE / IGNORE";
+
 export interface SensorPosition {
   x: number;
   y: number;
@@ -26,6 +36,9 @@ export interface ProcessedReading {
   velocity: number;
   direction: number | null;
   status: DetectionStatus;
+  room_status: RoomStatus;
+  person_visible: boolean;
+  calibration_remaining_sec: number | null;
   csi_waveform: number[];
   simulation_mode: boolean;
   room: RoomConfig;
@@ -43,3 +56,8 @@ export interface HeatmapCell {
   y: number;
   intensity: number;
 }
+
+// Thresholds mirrored from backend defaults for frontend gating
+export const TRAIL_MIN_DISTANCE_M = 0.25;
+export const HEATMAP_MIN_PRESENCE = 0.65;
+export const HEATMAP_MIN_MOVEMENT = 0.65;

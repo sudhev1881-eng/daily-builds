@@ -3,6 +3,27 @@
 from pydantic_settings import BaseSettings
 
 
+class DetectionThresholds(BaseSettings):
+    """Configurable detection thresholds — override via WIFI_SENSE_DETECTION_ env prefix."""
+
+    calibration_duration_sec: float = 10.0
+    presence_start_threshold: float = 0.65
+    presence_stop_threshold: float = 0.40
+    movement_start_threshold: float = 0.65
+    movement_stop_threshold: float = 0.35
+    presence_confirm_samples: int = 15
+    movement_confirm_samples: int = 20
+    movement_stop_samples: int = 30
+    position_deadband_m: float = 0.15
+    trail_min_distance_m: float = 0.25
+    ema_alpha: float = 0.12
+    noise_floor: float = 0.08
+    environmental_learn_samples: int = 60
+
+    class Config:
+        env_prefix = "WIFI_SENSE_DETECTION_"
+
+
 class Settings(BaseSettings):
     """Runtime settings for the sensing backend."""
 
@@ -12,7 +33,6 @@ class Settings(BaseSettings):
     default_room_width: float = 8.0
     default_room_height: float = 6.0
 
-    # Default sensor positions (meters from bottom-left corner)
     router_x: float = 1.0
     router_y: float = 5.5
     receiver_x: float = 7.0
@@ -23,3 +43,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+detection_thresholds = DetectionThresholds()

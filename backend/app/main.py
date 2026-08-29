@@ -69,20 +69,24 @@ async def _broadcast_loop() -> None:
         if manager.client_count > 0:
             if _use_simulator:
                 raw = await simulator.read_measurement()
-                pipeline.set_simulator_state(
-                    simulator.person_x,
-                    simulator.person_y,
-                    simulator.is_present,
-                    simulator.is_moving,
-                    simulator.current_velocity,
-                    simulator.current_direction,
-                )
+                calibrating = pipeline.is_calibrating
+                simulator.set_calibrating(calibrating)
+
+                if not calibrating:
+                    pipeline.set_simulator_state(
+                        simulator.person_x,
+                        simulator.person_y,
+                        simulator.is_present,
+                        simulator.is_moving,
+                        simulator.current_velocity,
+                        simulator.current_direction,
+                    )
+
+                reading = pipeline.process(raw, simulation_mode=_use_simulator)
             else:
-                # Hardware mode: pipeline processes measurements pushed via REST
                 await asyncio.sleep(interval)
                 continue
 
-            reading = pipeline.process(raw, simulation_mode=_use_simulator)
             await manager.broadcast(reading.model_dump())
 
         await asyncio.sleep(interval)

@@ -1,7 +1,7 @@
-import type { DetectionStatus } from "../types/sensor";
+import type { RoomStatus } from "../types/sensor";
 
 interface StatusPanelProps {
-  status: DetectionStatus;
+  roomStatus: RoomStatus;
   presenceProbability: number;
   movementProbability: number;
   timestamp: string | null;
@@ -9,40 +9,57 @@ interface StatusPanelProps {
 }
 
 const statusConfig: Record<
-  DetectionStatus,
+  string,
   { color: string; bg: string; glow: string }
 > = {
-  "No Person Detected": {
-    color: "text-slate-400",
-    bg: "bg-slate-500/10",
+  BOOTING: { color: "text-sky-400", bg: "bg-sky-500/10", glow: "" },
+  "BASELINE ESTABLISHED": {
+    color: "text-emerald-400",
+    bg: "bg-emerald-500/10",
     glow: "",
   },
-  "Person Detected": {
+  "ROOM EMPTY": { color: "text-slate-400", bg: "bg-slate-500/10", glow: "" },
+  "OCCUPIED — STATIONARY": {
     color: "text-emerald-400",
     bg: "bg-emerald-500/10",
     glow: "status-glow-person",
   },
-  "Movement Detected": {
+  "HUMAN MOVING": {
     color: "text-sky-400",
     bg: "bg-sky-500/10",
     glow: "status-glow-movement",
   },
+  "ENVIRONMENTAL ACTIVITY": {
+    color: "text-amber-400",
+    bg: "bg-amber-500/10",
+    glow: "",
+  },
+  "ENVIRONMENTAL CHANGE DETECTED": {
+    color: "text-amber-300",
+    bg: "bg-amber-500/10",
+    glow: "",
+  },
+  "NOISE / IGNORE": {
+    color: "text-slate-500",
+    bg: "bg-slate-500/5",
+    glow: "",
+  },
 };
 
 export function StatusPanel({
-  status,
+  roomStatus,
   presenceProbability,
   movementProbability,
   timestamp,
   connected,
 }: StatusPanelProps) {
-  const cfg = statusConfig[status];
+  const cfg = statusConfig[roomStatus] ?? statusConfig["ROOM EMPTY"];
 
   return (
     <div className={`glass-panel p-4 ${cfg.glow}`}>
       <div className="mb-3 flex items-center justify-between">
         <h3 className="font-mono text-xs tracking-wider text-slate-500 uppercase">
-          Detection Status
+          Room Status
         </h3>
         <div className="flex items-center gap-1.5">
           <span
@@ -54,11 +71,9 @@ export function StatusPanel({
         </div>
       </div>
 
-      <div
-        className={`mb-4 rounded-lg px-4 py-3 text-center ${cfg.bg}`}
-      >
+      <div className={`mb-4 rounded-lg px-4 py-3 text-center ${cfg.bg}`}>
         <p className={`font-mono text-lg font-semibold ${cfg.color}`}>
-          {status}
+          {roomStatus}
         </p>
       </div>
 
@@ -103,7 +118,7 @@ function MetricBar({
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
         <div
-          className={`h-full rounded-full transition-all duration-300 ${color}`}
+          className={`h-full rounded-full transition-all duration-500 ${color}`}
           style={{ width: `${Math.min(100, value)}%` }}
         />
       </div>

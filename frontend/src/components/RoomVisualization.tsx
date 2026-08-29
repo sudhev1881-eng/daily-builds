@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { HeatmapCell, RoomConfig, TrailPoint } from "../types/sensor";
 
 interface RoomVisualizationProps {
   room: RoomConfig;
   personX: number;
   personY: number;
-  personPresent: boolean;
+  personVisible: boolean;
   personMoving: boolean;
   direction: number | null;
   trails: TrailPoint[];
@@ -14,13 +14,15 @@ interface RoomVisualizationProps {
 }
 
 const PADDING = 60;
-const GRID_SIZE = 0.5;
+const GRID_SIZE = 1.0;
+const POSITION_DEADBAND = 0.15;
+const LERP_FACTOR = 0.12;
 
 export function RoomVisualization({
   room,
   personX,
   personY,
-  personPresent,
+  personVisible,
   personMoving,
   direction,
   trails,
@@ -29,39 +31,49 @@ export function RoomVisualization({
 }: RoomVisualizationProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [dragging, setDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const animRef = useRef<number>(0);
   const smoothPos = useRef({ x: personX, y: personY });
+  const targetPos = useRef({ x: personX, y: personY });
   const pulsePhase = useRef(0);
+  const layoutRef = useRef({ scale: 1, offsetX: 0, offsetY: 0, w: 0, h: 0 });
 
-  const getScale = useCallback(
+  // Fixed coordinate transform: room meters → canvas pixels (no pan, no follow)
+  const computeLayout = useCallback(
     (canvasW: number, canvasH: number) => {
       const availW = canvasW - PADDING * 2;
       const availH = canvasH - PADDING * 2;
       const scaleX = availW / room.width;
       const scaleY = availH / room.height;
-      return Math.min(scaleX, scaleY) * zoom;
+      const scale = Math.min(scaleX, scaleY);
+      const roomPxW = room.width * scale;
+      const roomPxH = room.height * scale;
+      const offsetX = (canvasW - roomPxW) / 2;
+      const offsetY = (canvasH - roomPxH) / 2;
+      return { scale, offsetX, offsetY, roomPxW, roomPxH };
     },
-    [room.width, room.height, zoom]
+    [room.width, room.height]
   );
 
   const worldToScreen = useCallback(
-    (wx: number, wy: number, canvasW: number, canvasH: number) => {
-      const scale = getScale(canvasW, canvasH);
-      const roomPxW = room.width * scale;
-      const roomPxH = room.height * scale;
-      const offsetX = (canvasW - roomPxW) / 2 + pan.x;
-      const offsetY = (canvasH - roomPxH) / 2 + pan.y;
+    (wx: number, wy: number) => {
+      const { scale, offsetX, offsetY } = layoutRef.current;
       return {
         x: offsetX + wx * scale,
         y: offsetY + (room.height - wy) * scale,
       };
     },
-    [room, getScale, pan]
+    [room.height]
   );
+
+  // Update target with deadband — only move when change is meaningful
+  useEffect(() => {
+    if (!personVisible) return;
+    const dx = personX - targetPos.current.x;
+    const dy = personY - targetPos.current.y;
+    if (Math.hypot(dx, dy) >= POSITION_DEADBAND || personMoving) {
+      targetPos.current = { x: personX, y: personY };
+    }
+  }, [personX, personY, personVisible, personMoving]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -77,21 +89,20 @@ export function RoomVisualization({
     canvas.height = rect.height * dpr;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const w = rect.width;
     const h = rect.height;
-    const scale = getScale(w, h);
-    const roomPxW = room.width * scale;
-    const roomPxH = room.height * scale;
-    const offsetX = (w - roomPxW) / 2 + pan.x;
-    const offsetY = (h - roomPxH) / 2 + pan.y;
+    const layout = computeLayout(w, h);
+    layoutRef.current = { ...layout, w, h };
+
+    const { scale, offsetX, offsetY, roomPxW, roomPxH } = layout;
 
     // Background
     ctx.fillStyle = "#060a12";
     ctx.fillRect(0, 0, w, h);
 
-    // Grid
+    // Grid (1m intervals)
     ctx.strokeStyle = "rgba(56,189,248,0.06)";
     ctx.lineWidth = 0.5;
     for (let gx = 0; gx <= room.width; gx += GRID_SIZE) {
@@ -109,34 +120,24 @@ export function RoomVisualization({
       ctx.stroke();
     }
 
-    // Heatmap
-    const cellSize = scale * 0.4;
+    // Room floor
+    ctx.fillStyle = "rgba(15,23,42,0.5)";
+    ctx.fillRect(offsetX, offsetY, roomPxW, roomPxH);
+
+    // Heatmap (only meaningful movement data passed in)
+    const cellSize = scale * 0.5;
     for (const cell of heatmap) {
-      if (cell.intensity < 0.02) continue;
-      const pos = worldToScreen(cell.x, cell.y, w, h);
-      const alpha = Math.min(cell.intensity * 0.6, 0.7);
+      if (cell.intensity < 0.05) continue;
+      const pos = worldToScreen(cell.x, cell.y);
+      const alpha = Math.min(cell.intensity * 0.5, 0.6);
       const gradient = ctx.createRadialGradient(
-        pos.x,
-        pos.y,
-        0,
-        pos.x,
-        pos.y,
-        cellSize
+        pos.x, pos.y, 0, pos.x, pos.y, cellSize
       );
       gradient.addColorStop(0, `rgba(56,189,248,${alpha})`);
       gradient.addColorStop(1, "rgba(56,189,248,0)");
       ctx.fillStyle = gradient;
-      ctx.fillRect(
-        pos.x - cellSize,
-        pos.y - cellSize,
-        cellSize * 2,
-        cellSize * 2
-      );
+      ctx.fillRect(pos.x - cellSize, pos.y - cellSize, cellSize * 2, cellSize * 2);
     }
-
-    // Room floor
-    ctx.fillStyle = "rgba(15,23,42,0.5)";
-    ctx.fillRect(offsetX, offsetY, roomPxW, roomPxH);
 
     // Walls
     ctx.strokeStyle = "rgba(56,189,248,0.4)";
@@ -147,7 +148,7 @@ export function RoomVisualization({
     const cornerLen = 12;
     ctx.strokeStyle = "rgba(56,189,248,0.7)";
     ctx.lineWidth = 2;
-    const corners = [
+    const corners: [number, number][] = [
       [offsetX, offsetY],
       [offsetX + roomPxW, offsetY],
       [offsetX, offsetY + roomPxH],
@@ -165,48 +166,41 @@ export function RoomVisualization({
 
     // Movement trails
     const now = Date.now();
-    for (const trail of trails) {
-      const age = (now - trail.timestamp) / 5000;
+    const recentTrails = trails.filter((t) => now - t.timestamp < 8000);
+    if (recentTrails.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(56,189,248,0.25)";
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < recentTrails.length; i++) {
+        const pos = worldToScreen(recentTrails[i].x, recentTrails[i].y);
+        if (i === 0) ctx.moveTo(pos.x, pos.y);
+        else ctx.lineTo(pos.x, pos.y);
+      }
+      ctx.stroke();
+    }
+    for (const trail of recentTrails) {
+      const age = (now - trail.timestamp) / 8000;
       if (age > 1) continue;
-      const pos = worldToScreen(trail.x, trail.y, w, h);
-      const alpha = (1 - age) * trail.intensity * 0.8;
+      const pos = worldToScreen(trail.x, trail.y);
+      const alpha = (1 - age) * trail.intensity * 0.7;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 3 * (1 - age * 0.5), 0, Math.PI * 2);
       ctx.fillStyle = `rgba(56,189,248,${alpha})`;
       ctx.fill();
     }
 
-    // Trail lines
-    if (trails.length > 1) {
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(56,189,248,0.2)";
-      ctx.lineWidth = 1.5;
-      const recentTrails = trails.filter((t) => now - t.timestamp < 5000);
-      for (let i = 0; i < recentTrails.length; i++) {
-        const pos = worldToScreen(recentTrails[i].x, recentTrails[i].y, w, h);
-        if (i === 0) ctx.moveTo(pos.x, pos.y);
-        else ctx.lineTo(pos.x, pos.y);
-      }
-      ctx.stroke();
-    }
-
-    // Sensor pulse
-    pulsePhase.current += 0.05;
-    const pulseR = 8 + Math.sin(pulsePhase.current) * 4;
-
+    // Sensors
+    pulsePhase.current += 0.03;
     const drawSensor = (
-      sx: number,
-      sy: number,
-      label: string,
-      color: string,
-      icon: string
+      sx: number, sy: number, label: string, color: string, icon: string
     ) => {
-      const pos = worldToScreen(sx, sy, w, h);
+      const pos = worldToScreen(sx, sy);
 
       if (movementDetected) {
+        const pulseR = 10 + Math.sin(pulsePhase.current) * 3;
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, pulseR + 10, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(56,189,248,${0.15 + Math.sin(pulsePhase.current) * 0.1})`;
+        ctx.arc(pos.x, pos.y, pulseR + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(56,189,248,${0.12 + Math.sin(pulsePhase.current) * 0.06})`;
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -223,7 +217,6 @@ export function RoomVisualization({
       ctx.font = "10px JetBrains Mono";
       ctx.textAlign = "center";
       ctx.fillText(icon, pos.x, pos.y + 4);
-
       ctx.fillStyle = "#64748b";
       ctx.font = "9px JetBrains Mono";
       ctx.fillText(label, pos.x, pos.y - 16);
@@ -231,44 +224,32 @@ export function RoomVisualization({
     };
 
     drawSensor(room.router.x, room.router.y, "ROUTER", "#0ea5e9", "📡");
-    drawSensor(
-      room.receiver.x,
-      room.receiver.y,
-      "RECEIVER",
-      "#8b5cf6",
-      "📶"
-    );
+    drawSensor(room.receiver.x, room.receiver.y, "RECEIVER", "#8b5cf6", "📶");
 
-    // Smooth person position
-    const lerpFactor = 0.15;
-    smoothPos.current.x +=
-      (personX - smoothPos.current.x) * lerpFactor;
-    smoothPos.current.y +=
-      (personY - smoothPos.current.y) * lerpFactor;
+    // Fan indicator (environmental)
+    const fanPos = worldToScreen(room.width * 0.75, room.height * 0.3);
+    ctx.fillStyle = "rgba(251,191,36,0.15)";
+    ctx.font = "9px JetBrains Mono";
+    ctx.textAlign = "center";
+    ctx.fillText("FAN", fanPos.x, fanPos.y - 8);
 
-    if (personPresent) {
-      const pos = worldToScreen(
-        smoothPos.current.x,
-        smoothPos.current.y,
-        w,
-        h
-      );
+    // Person marker — smooth interpolation toward target
+    if (personVisible) {
+      smoothPos.current.x +=
+        (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
+      smoothPos.current.y +=
+        (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
 
-      // Person glow
-      const glow = ctx.createRadialGradient(
-        pos.x,
-        pos.y,
-        0,
-        pos.x,
-        pos.y,
-        20
-      );
-      glow.addColorStop(0, "rgba(52,211,153,0.3)");
-      glow.addColorStop(1, "rgba(52,211,153,0)");
-      ctx.fillStyle = glow;
-      ctx.fillRect(pos.x - 25, pos.y - 25, 50, 50);
+      const pos = worldToScreen(smoothPos.current.x, smoothPos.current.y);
 
-      // Person body
+      if (personMoving) {
+        const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 20);
+        glow.addColorStop(0, "rgba(52,211,153,0.25)");
+        glow.addColorStop(1, "rgba(52,211,153,0)");
+        ctx.fillStyle = glow;
+        ctx.fillRect(pos.x - 25, pos.y - 25, 50, 50);
+      }
+
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
       ctx.fillStyle = personMoving ? "#34d399" : "#6ee7b7";
@@ -277,7 +258,6 @@ export function RoomVisualization({
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Direction arrow
       if (direction !== null && personMoving) {
         const arrowLen = 18;
         const ax = pos.x + Math.cos(direction) * arrowLen;
@@ -288,30 +268,27 @@ export function RoomVisualization({
         ctx.strokeStyle = "rgba(52,211,153,0.7)";
         ctx.lineWidth = 2;
         ctx.stroke();
-
-        const headLen = 6;
-        const angle1 = direction + Math.PI * 0.8;
-        const angle2 = direction - Math.PI * 0.8;
-        ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(
-          ax - Math.cos(angle1) * headLen,
-          ay + Math.sin(angle1) * headLen
-        );
-        ctx.lineTo(
-          ax - Math.cos(angle2) * headLen,
-          ay + Math.sin(angle2) * headLen
-        );
-        ctx.closePath();
-        ctx.fillStyle = "rgba(52,211,153,0.7)";
-        ctx.fill();
       }
 
       ctx.fillStyle = "#94a3b8";
       ctx.font = "9px JetBrains Mono";
       ctx.textAlign = "center";
       ctx.fillText("ESTIMATED", pos.x, pos.y - 18);
+      ctx.fillStyle = "#64748b";
+      ctx.font = "8px JetBrains Mono";
+      ctx.fillText(
+        `(${smoothPos.current.x.toFixed(1)}, ${smoothPos.current.y.toFixed(1)})m`,
+        pos.x,
+        pos.y + 24
+      );
     }
+
+    // Origin marker
+    const origin = worldToScreen(0, 0);
+    ctx.fillStyle = "rgba(100,116,139,0.5)";
+    ctx.font = "8px JetBrains Mono";
+    ctx.textAlign = "left";
+    ctx.fillText("(0,0)", origin.x + 4, origin.y - 4);
 
     // Dimension labels
     ctx.fillStyle = "#475569";
@@ -326,18 +303,8 @@ export function RoomVisualization({
 
     animRef.current = requestAnimationFrame(draw);
   }, [
-    room,
-    personX,
-    personY,
-    personPresent,
-    personMoving,
-    direction,
-    trails,
-    heatmap,
-    movementDetected,
-    pan,
-    getScale,
-    worldToScreen,
+    room, personVisible, personMoving, direction, trails, heatmap,
+    movementDetected, computeLayout, worldToScreen,
   ]);
 
   useEffect(() => {
@@ -345,46 +312,17 @@ export function RoomVisualization({
     return () => cancelAnimationFrame(animRef.current);
   }, [draw]);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    setZoom((z) => Math.max(0.5, Math.min(3, z - e.deltaY * 0.001)));
-  };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setDragging(true);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!dragging) return;
-    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
-  };
-
-  const handleMouseUp = () => setDragging(false);
-
   return (
     <div
       ref={containerRef}
       className="glass-panel relative h-full w-full overflow-hidden"
-      style={{ cursor: dragging ? "grabbing" : "grab" }}
     >
-      <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
+      <div className="absolute top-3 left-3 z-10">
         <span className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
-          Room Map
-        </span>
-        <span className="rounded bg-slate-800/80 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
-          Drag to pan · Scroll to zoom
+          Room Map — Fixed View
         </span>
       </div>
-      <canvas
-        ref={canvasRef}
-        className="h-full w-full"
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-      />
+      <canvas ref={canvasRef} className="h-full w-full" />
     </div>
   );
 }

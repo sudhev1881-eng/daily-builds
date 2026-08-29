@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
-import type { HeatmapCell, TrailPoint } from "../types/sensor";
+import type { HeatmapCell, RoomStatus, TrailPoint } from "../types/sensor";
+import {
+  HEATMAP_MIN_MOVEMENT,
+  HEATMAP_MIN_PRESENCE,
+  TRAIL_MIN_DISTANCE_M,
+} from "../types/sensor";
+import { CalibrationOverlay } from "./CalibrationOverlay";
 import { ConfigPanel } from "./ConfigPanel";
 import { MovementMeter } from "./MovementMeter";
 import { RoomVisualization } from "./RoomVisualization";
@@ -25,8 +31,14 @@ export function Dashboard() {
   const [trails, setTrails] = useState<TrailPoint[]>([]);
   const [heatmap, setHeatmap] = useState<HeatmapCell[]>([]);
   const heatmapRef = useRef<Map<string, number>>(new Map());
+  const lastTrailPos = useRef<{ x: number; y: number } | null>(null);
 
   const currentRoom = room || reading?.room || DEFAULT_ROOM;
+  const roomStatus: RoomStatus = reading?.room_status ?? "BOOTING";
+  const isCalibrating =
+    roomStatus === "BOOTING" || roomStatus === "BASELINE ESTABLISHED";
+  const personVisible = reading?.person_visible ?? false;
+  const personMoving = roomStatus === "HUMAN MOVING";
 
   useEffect(() => {
     if (!reading) return;
@@ -34,33 +46,44 @@ export function Dashboard() {
     const time = new Date(reading.timestamp).toLocaleTimeString();
     setRssiHistory((prev) => [...prev.slice(-120), { time, rssi: reading.rssi }]);
 
-    if (
-      reading.presence_probability > 0.5 &&
-      reading.movement_probability > 0.3
-    ) {
-      setTrails((prev) => [
-        ...prev.slice(-200),
-        {
-          x: reading.x,
-          y: reading.y,
-          timestamp: Date.now(),
-          intensity: reading.movement_intensity / 100,
-        },
-      ]);
+    // Only add trails/heatmap for confirmed human movement
+    const isHumanMoving =
+      reading.room_status === "HUMAN MOVING" &&
+      reading.presence_probability >= HEATMAP_MIN_PRESENCE &&
+      reading.movement_probability >= HEATMAP_MIN_MOVEMENT;
 
-      const cellX = Math.round(reading.x * 2) / 2;
-      const cellY = Math.round(reading.y * 2) / 2;
-      const key = `${cellX},${cellY}`;
-      const current = heatmapRef.current.get(key) || 0;
-      heatmapRef.current.set(
-        key,
-        Math.min(1, current + reading.movement_intensity / 200)
-      );
+    if (isHumanMoving && reading.person_visible) {
+      const last = lastTrailPos.current;
+      const dist = last
+        ? Math.hypot(reading.x - last.x, reading.y - last.y)
+        : TRAIL_MIN_DISTANCE_M;
+
+      if (dist >= TRAIL_MIN_DISTANCE_M) {
+        lastTrailPos.current = { x: reading.x, y: reading.y };
+        setTrails((prev) => [
+          ...prev.slice(-150),
+          {
+            x: reading.x,
+            y: reading.y,
+            timestamp: Date.now(),
+            intensity: reading.movement_intensity / 100,
+          },
+        ]);
+
+        const cellX = Math.round(reading.x * 2) / 2;
+        const cellY = Math.round(reading.y * 2) / 2;
+        const key = `${cellX},${cellY}`;
+        const current = heatmapRef.current.get(key) || 0;
+        heatmapRef.current.set(
+          key,
+          Math.min(1, current + reading.movement_intensity / 300)
+        );
+      }
     }
 
-    // Decay heatmap
+    // Gradual heatmap decay
     for (const [key, val] of heatmapRef.current.entries()) {
-      const decayed = val * 0.995;
+      const decayed = val * 0.992;
       if (decayed < 0.01) heatmapRef.current.delete(key);
       else heatmapRef.current.set(key, decayed);
     }
@@ -72,9 +95,6 @@ export function Dashboard() {
     }
     setHeatmap(cells);
   }, [reading]);
-
-  const personPresent = (reading?.presence_probability ?? 0) > 0.5;
-  const personMoving = (reading?.movement_probability ?? 0) > 0.45;
 
   return (
     <div className="flex h-full flex-col">
@@ -92,7 +112,7 @@ export function Dashboard() {
         <div className="flex items-center gap-3">
           <div className="hidden items-center gap-1.5 sm:flex">
             <span
-              className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`}
+              className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : "bg-red-400"}`}
             />
             <span className="font-mono text-[10px] text-slate-500">
               {connected ? "WebSocket Connected" : "Reconnecting..."}
@@ -102,25 +122,27 @@ export function Dashboard() {
       </header>
 
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[1fr_320px] lg:grid-rows-[1fr_auto]">
-        {/* Room visualization — main area */}
-        <div className="min-h-[300px] lg:row-span-2">
+        <div className="relative min-h-[300px] lg:row-span-2">
           <RoomVisualization
             room={currentRoom}
             personX={reading?.x ?? currentRoom.width / 2}
             personY={reading?.y ?? currentRoom.height / 2}
-            personPresent={personPresent}
+            personVisible={personVisible && !isCalibrating}
             personMoving={personMoving}
             direction={reading?.direction ?? null}
             trails={trails}
             heatmap={heatmap}
-            movementDetected={reading?.status === "Movement Detected"}
+            movementDetected={personMoving}
+          />
+          <CalibrationOverlay
+            remaining={reading?.calibration_remaining_sec ?? null}
+            roomStatus={roomStatus}
           />
         </div>
 
-        {/* Right sidebar */}
         <div className="flex flex-col gap-3 overflow-y-auto">
           <StatusPanel
-            status={reading?.status ?? "No Person Detected"}
+            roomStatus={roomStatus}
             presenceProbability={reading?.presence_probability ?? 0}
             movementProbability={reading?.movement_probability ?? 0}
             timestamp={reading?.timestamp ?? null}
@@ -134,7 +156,6 @@ export function Dashboard() {
           <ConfigPanel room={currentRoom} onUpdate={sendConfig} />
         </div>
 
-        {/* Bottom charts */}
         <div className="grid min-h-[180px] grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-1">
           <SignalGraph data={rssiHistory} />
           <WaveformChart waveform={reading?.csi_waveform ?? []} />
@@ -145,8 +166,7 @@ export function Dashboard() {
         <p className="text-center font-mono text-[10px] leading-relaxed text-slate-600">
           Disclaimer: Person location shown is an estimate derived from Wi-Fi
           channel state information (CSI) and RSSI measurements. This is not a
-          camera image and does not guarantee exact positioning. Accuracy depends
-          on environment, hardware, and calibration.
+          camera image and does not guarantee exact positioning.
         </p>
       </footer>
     </div>
