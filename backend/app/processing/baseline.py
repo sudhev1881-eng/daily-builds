@@ -90,6 +90,10 @@ class BaselineCalibrator:
             return True
         return (t - self._start_time) < self.duration_sec
 
+    def calibration_samples(self) -> tuple[list[float], list[np.ndarray]]:
+        """Stored quiet-period samples, for adaptive threshold learning."""
+        return self._rssi_samples, self._csi_amp_samples
+
     def finalize(self) -> SignalBaseline:
         n = len(self._rssi_samples)
         if n == 0:

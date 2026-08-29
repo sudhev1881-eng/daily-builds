@@ -1,26 +1,39 @@
 """
-Processing pipeline: converts raw RSSI/CSI measurements into
-presence, movement, and position estimates with baseline subtraction,
-temporal filtering, hysteresis, and environmental pattern detection.
+Processing pipeline: converts raw RSSI/CSI measurements into presence,
+movement, and position estimates.
+
+Detection design (research-based, see csi_features.py):
+
+1. 10 s quiet calibration learns per-subcarrier baseline mean/std AND the
+   score distributions of the quiet room (fan included). Trigger thresholds
+   are set adaptively at P95(baseline) * headroom — so environmental noise
+   can never trip detection, regardless of environment.
+2. Motion uses the cross-subcarrier "turbulence" metric: human movement
+   decorrelates subcarriers, fans/noise do not.
+3. Presence uses the static baseline deviation (a body shifts the amplitude
+   profile) and is held alive by breathing-band detection for stationary
+   humans.
+4. Movement output is hard-gated: zero unless motion is confirmed active.
+5. Position freezes while the person is stationary — no Kalman drift.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from collections import deque
 
 import numpy as np
 
 from app.config import detection_thresholds as dt
 from app.models import DetectionStatus, ProcessedReading, RawMeasurement, RoomConfig, RoomStatus
 from app.processing.baseline import BaselineCalibrator
-from app.processing.filters import (
-    ExponentialMovingAverage,
-    HysteresisState,
-    PeriodicDetector,
-    position_deadband,
+from app.processing.csi_features import (
+    AdaptiveThreshold,
+    BreathingDetector,
+    TurbulenceMotionScorer,
+    presence_score,
 )
+from app.processing.filters import HysteresisState, PeriodicDetector, position_deadband
 from app.processing.kalman import KalmanFilter2D
 from app.processing.positioning import estimate_position
 
@@ -33,21 +46,38 @@ class ProcessingPipeline:
         self._calibrator = BaselineCalibrator(dt.calibration_duration_sec)
         self._calibrator_started = False
         self._baseline_announced = False
-        self._baseline_announce_time: float = 0.0
 
-        self._presence_ema = ExponentialMovingAverage(dt.ema_alpha)
-        self._movement_ema = ExponentialMovingAverage(dt.ema_alpha)
-        self._presence_hyst = HysteresisState(
-            dt.presence_start_threshold,
-            dt.presence_stop_threshold,
-            dt.presence_confirm_samples,
-            dt.movement_stop_samples,
+        self._motion_scorer = TurbulenceMotionScorer(window=dt.turbulence_window)
+        self._motion_threshold = AdaptiveThreshold(
+            headroom=dt.motion_headroom,
+            percentile=dt.motion_percentile,
+            floor=dt.motion_floor,
         )
-        self._movement_hyst = HysteresisState(
-            dt.movement_start_threshold,
-            dt.movement_stop_threshold,
-            dt.movement_confirm_samples,
-            dt.movement_stop_samples,
+        self._presence_threshold = AdaptiveThreshold(
+            headroom=dt.presence_headroom,
+            percentile=dt.presence_percentile,
+            floor=dt.presence_floor,
+        )
+        self._thresholds_learned = False
+
+        # Scores are fed as score/threshold ratios. Stop levels must sit
+        # ABOVE the quiet-room level (~0.64 of threshold = P95 / headroom),
+        # otherwise ambient noise keeps the state latched on forever.
+        self._presence_hyst = HysteresisState(
+            start_threshold=1.0,
+            stop_threshold=0.85,
+            start_confirm=dt.presence_on_samples,
+            stop_confirm=dt.presence_off_samples,
+        )
+        self._motion_hyst = HysteresisState(
+            start_threshold=1.0,
+            stop_threshold=0.80,
+            start_confirm=dt.motion_on_samples,
+            stop_confirm=dt.motion_off_samples,
+        )
+        self._breathing = BreathingDetector(
+            window=dt.breathing_window,
+            ratio_threshold=dt.breathing_ratio_threshold,
         )
         self._periodic = PeriodicDetector(window=80, min_period=3, max_period=30)
 
@@ -57,12 +87,8 @@ class ProcessingPipeline:
         self._display_y = self._est_y
         self._velocity = 0.0
         self._direction: float | None = None
-        self._last_trail_x = self._est_x
-        self._last_trail_y = self._est_y
 
         self._room_status = RoomStatus.BOOTING
-        self._env_change_detected = False
-        self._env_learn_counter = 0
 
         # Ground truth hints from simulator (position only, NOT detection)
         self._sim_x: float | None = None
@@ -72,13 +98,9 @@ class ProcessingPipeline:
         self._sim_velocity = 0.0
         self._sim_direction = 0.0
 
-        self._csi_delta_history: deque[float] = deque(maxlen=100)
-        self._prev_csi_amp: np.ndarray | None = None
-        self._position_history: deque[tuple[float, float]] = deque(maxlen=10)
         self._was_person_visible = False
         self._kalman = KalmanFilter2D(self._est_x, self._est_y)
-        self._high_accuracy = dt.accuracy_mode == "high"
-        self._deadband = 0.08 if self._high_accuracy else dt.position_deadband_m
+        self._deadband = dt.position_deadband_m
 
     def set_simulator_state(
         self,
@@ -104,43 +126,50 @@ class ProcessingPipeline:
     def is_calibrating(self) -> bool:
         return self._calibrator.is_calibrating(time.time())
 
-    def _csi_temporal_change(self, amplitudes: list[float], prev: np.ndarray | None) -> float:
-        if prev is None or not amplitudes:
-            return 0.0
-        curr = np.array(amplitudes)
-        if len(prev) != len(curr):
-            return 0.0
-        return float(np.mean(np.abs(curr - prev)))
+    # ------------------------------------------------------------------
+    # Signal features
+    # ------------------------------------------------------------------
 
-    def _compute_raw_scores(
-        self,
-        rssi_dev: float,
-        amp_dev: float,
-        phase_dev: float,
-        csi_change: float,
-    ) -> tuple[float, float]:
-        """Derive presence and movement scores from baseline deviation."""
-        # Ignore noise below floor
-        rssi_dev = max(0.0, rssi_dev - dt.noise_floor)
-        amp_dev = max(0.0, amp_dev - dt.noise_floor)
-        csi_change_norm = max(0.0, csi_change - dt.noise_floor * 0.5)
+    def _normalize(self, amplitudes: list[float]) -> np.ndarray | None:
+        """Baseline z-score per subcarrier."""
+        baseline = self._calibrator.baseline
+        if not amplitudes or len(amplitudes) != len(baseline.csi_amp_mean):
+            return None
+        arr = np.array(amplitudes, dtype=float)
+        return (arr - baseline.csi_amp_mean) / np.maximum(baseline.csi_amp_std, 0.01)
 
-        presence_raw = min(1.0, rssi_dev * 0.3 + amp_dev * 0.35 + phase_dev * 0.15)
-        movement_raw = min(1.0, csi_change_norm * 0.5 + amp_dev * 0.25 + rssi_dev * 0.15)
+    def _rssi_z(self, rssi: float) -> float:
+        baseline = self._calibrator.baseline
+        return (rssi - baseline.rssi_mean) / max(baseline.rssi_std, 0.3)
 
-        return presence_raw, movement_raw
+    def _learn_thresholds(self) -> None:
+        """Replay quiet calibration samples through the scorers to set
+        adaptive thresholds (P95 * headroom)."""
+        rssi_samples, amp_samples = self._calibrator.calibration_samples()
+        scorer = TurbulenceMotionScorer(window=dt.turbulence_window)
 
-    def _displacement_factor(self) -> float:
-        """Scale movement score by actual position change over recent frames."""
-        if len(self._position_history) < 3:
-            return 0.0
-        oldest = self._position_history[0]
-        newest = self._position_history[-1]
-        displacement = math.hypot(newest[0] - oldest[0], newest[1] - oldest[1])
-        return min(1.0, displacement / (dt.position_deadband_m * 3))
+        for i, amps in enumerate(amp_samples):
+            amp_norm = self._normalize(amps.tolist())
+            if amp_norm is None:
+                continue
+            motion = scorer.update(amp_norm)
+            if motion > 0.0:
+                self._motion_threshold.add_baseline_sample(motion)
+            rssi = rssi_samples[i] if i < len(rssi_samples) else self._calibrator.baseline.rssi_mean
+            self._presence_threshold.add_baseline_sample(
+                presence_score(amp_norm, self._rssi_z(rssi))
+            )
 
-    def _estimate_position_from_signal(self, rssi: float, presence_score: float) -> tuple[float, float]:
-        """Fuse RSSI bilateration, simulator hint, and Kalman smoothing."""
+        self._motion_threshold.finalize()
+        self._presence_threshold.finalize()
+        self._thresholds_learned = True
+
+    # ------------------------------------------------------------------
+    # Position
+    # ------------------------------------------------------------------
+
+    def _update_position(self, rssi: float) -> None:
+        """Only called while movement is active — stationary position is frozen."""
         raw_x, raw_y = estimate_position(
             rssi,
             self.room,
@@ -151,62 +180,99 @@ class ProcessingPipeline:
             sim_present=self._sim_present,
         )
 
-        if not self._was_person_visible:
-            self._kalman.reset(raw_x, raw_y)
-
         self._kalman.predict()
         self._kalman.update(raw_x, raw_y)
         kx, ky = self._kalman.position
 
-        if presence_score > dt.presence_stop_threshold:
-            if self._sim_moving:
-                alpha = 0.55 if self._high_accuracy else 0.45
-            elif self._was_person_visible:
-                alpha = 0.20 if self._high_accuracy else 0.12
-            else:
-                alpha = 1.0
-            self._est_x = alpha * kx + (1 - alpha) * self._est_x
-            self._est_y = alpha * ky + (1 - alpha) * self._est_y
+        alpha = 0.55
+        self._est_x = alpha * kx + (1 - alpha) * self._est_x
+        self._est_y = alpha * ky + (1 - alpha) * self._est_y
 
-        return self._est_x, self._est_y
+        x, y = position_deadband(self._est_x, self._est_y, self._display_x, self._display_y, self._deadband)
+        self._display_x, self._display_y = x, y
+
+    def _snap_position(self, rssi: float) -> None:
+        """First appearance: snap directly to estimate, no lerp from center."""
+        raw_x, raw_y = estimate_position(
+            rssi,
+            self.room,
+            self._display_x,
+            self._display_y,
+            sim_x=self._sim_x,
+            sim_y=self._sim_y,
+            sim_present=self._sim_present,
+        )
+        self._est_x, self._est_y = raw_x, raw_y
+        self._display_x, self._display_y = raw_x, raw_y
+        self._kalman.reset(raw_x, raw_y)
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
 
     def _resolve_room_status(
         self,
         presence_active: bool,
         movement_active: bool,
-        movement_score: float,
-        periodic_learned: bool,
-        periodic_detected: bool,
     ) -> RoomStatus:
-        if periodic_learned and not presence_active:
+        if movement_active and not presence_active and self._periodic.learned:
             return RoomStatus.ENVIRONMENTAL_ACTIVITY
-
-        if periodic_detected and not periodic_learned and not presence_active:
-            if not self._env_change_detected:
-                self._env_change_detected = True
-                return RoomStatus.ENVIRONMENTAL_CHANGE
-            self._env_learn_counter += 1
-            if self._env_learn_counter >= dt.environmental_learn_samples:
-                return RoomStatus.ENVIRONMENTAL_ACTIVITY
-            return RoomStatus.ENVIRONMENTAL_CHANGE
-
         if not presence_active:
             return RoomStatus.ROOM_EMPTY
-
         if movement_active:
             return RoomStatus.HUMAN_MOVING
-
         return RoomStatus.OCCUPIED_STATIONARY
 
-    def _to_legacy_status(self, room_status: RoomStatus, presence_active: bool, movement_active: bool) -> DetectionStatus:
-        if room_status in (RoomStatus.BOOTING, RoomStatus.BASELINE_ESTABLISHED, RoomStatus.ROOM_EMPTY,
-                            RoomStatus.ENVIRONMENTAL_ACTIVITY, RoomStatus.NOISE_IGNORE):
-            return DetectionStatus.NO_PERSON
-        if movement_active:
+    def _to_legacy_status(self, presence_active: bool, movement_active: bool) -> DetectionStatus:
+        if movement_active and presence_active:
             return DetectionStatus.MOVEMENT
         if presence_active:
             return DetectionStatus.PERSON
         return DetectionStatus.NO_PERSON
+
+    def _make_reading(
+        self,
+        measurement: RawMeasurement,
+        *,
+        presence_probability: float = 0.0,
+        movement_probability: float = 0.0,
+        movement_intensity: float = 0.0,
+        velocity: float = 0.0,
+        direction: float | None = None,
+        status: DetectionStatus = DetectionStatus.NO_PERSON,
+        room_status: RoomStatus,
+        person_visible: bool = False,
+        calibration_remaining_sec: float | None = None,
+        position_error_m: float | None = None,
+        accuracy_radius_m: float = 0.5,
+        simulation_mode: bool = True,
+    ) -> ProcessedReading:
+        amplitudes = measurement.csi_amplitude or []
+        waveform = amplitudes[:32] if amplitudes else [measurement.rssi / -100.0] * 32
+        return ProcessedReading(
+            timestamp=measurement.timestamp,
+            rssi=measurement.rssi,
+            presence_probability=round(presence_probability, 3),
+            movement_probability=round(movement_probability, 3),
+            movement_intensity=round(movement_intensity, 1),
+            x=round(self._display_x, 2),
+            y=round(self._display_y, 2),
+            velocity=round(velocity, 2),
+            direction=direction,
+            status=status,
+            room_status=room_status,
+            person_visible=person_visible,
+            calibration_remaining_sec=calibration_remaining_sec,
+            position_error_m=round(position_error_m, 3) if position_error_m is not None else None,
+            accuracy_radius_m=accuracy_radius_m,
+            csi_waveform=[round(v, 4) for v in waveform],
+            simulation_mode=simulation_mode,
+            room=self.room,
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry
+    # ------------------------------------------------------------------
 
     def process(
         self,
@@ -225,168 +291,117 @@ class ProcessingPipeline:
 
         if self._calibrator.is_calibrating(t):
             self._calibrator.add_sample(rssi, amplitudes, phases)
-            remaining = self._calibrator.remaining(t)
-            waveform = amplitudes[:32] if amplitudes else [rssi / -100.0] * 32
-            return ProcessedReading(
-                timestamp=measurement.timestamp,
-                rssi=rssi,
-                presence_probability=0.0,
-                movement_probability=0.0,
-                movement_intensity=0.0,
-                x=self._display_x,
-                y=self._display_y,
-                velocity=0.0,
-                direction=None,
-                status=DetectionStatus.NO_PERSON,
+            return self._make_reading(
+                measurement,
                 room_status=RoomStatus.BOOTING,
-                person_visible=False,
-                calibration_remaining_sec=round(remaining, 1),
-                csi_waveform=[round(v, 4) for v in waveform],
+                calibration_remaining_sec=round(self._calibrator.remaining(t), 1),
                 simulation_mode=simulation_mode,
-                room=self.room,
             )
 
         if not self._calibrator.baseline.established:
             self._calibrator.finalize()
 
+        if not self._thresholds_learned:
+            self._learn_thresholds()
+
         if not self._baseline_announced:
             self._baseline_announced = True
-            self._baseline_announce_time = t
-            waveform = amplitudes[:32] if amplitudes else [rssi / -100.0] * 32
-            return ProcessedReading(
-                timestamp=measurement.timestamp,
-                rssi=rssi,
-                presence_probability=0.0,
-                movement_probability=0.0,
-                movement_intensity=0.0,
-                x=self._display_x,
-                y=self._display_y,
-                velocity=0.0,
-                direction=None,
-                status=DetectionStatus.NO_PERSON,
+            return self._make_reading(
+                measurement,
                 room_status=RoomStatus.BASELINE_ESTABLISHED,
-                person_visible=False,
                 calibration_remaining_sec=0.0,
-                csi_waveform=[round(v, 4) for v in waveform],
                 simulation_mode=simulation_mode,
-                room=self.room,
             )
 
         # --- Active detection ---
-        baseline = self._calibrator.baseline
+        amp_norm = self._normalize(amplitudes)
+        rssi_z = self._rssi_z(rssi)
 
-        rssi_dev, amp_dev, phase_dev = baseline.deviation_score(rssi, amplitudes, phases)
-        csi_change = self._csi_temporal_change(amplitudes, self._prev_csi_amp)
-        if amplitudes:
-            self._prev_csi_amp = np.array(amplitudes)
-        self._csi_delta_history.append(csi_change)
-        self._periodic.update(csi_change)
+        motion_score = self._motion_scorer.update(amp_norm) if amp_norm is not None else 0.0
+        pres_score = presence_score(amp_norm, rssi_z)
 
-        presence_raw, movement_raw = self._compute_raw_scores(rssi_dev, amp_dev, phase_dev, csi_change)
+        motion_ratio = motion_score / self._motion_threshold.threshold
+        presence_ratio = pres_score / self._presence_threshold.threshold
 
-        # Scale movement by actual displacement — stationary person should not register movement
-        displacement_factor = self._displacement_factor()
-        if self._sim_moving:
-            movement_raw *= max(0.55, displacement_factor)
-        else:
-            movement_raw *= displacement_factor
+        self._periodic.update(motion_score)
 
-        if displacement_factor > 0.25:
-            movement_raw = min(1.0, movement_raw + displacement_factor * 0.45)
+        movement_hyst_active = self._motion_hyst.update(motion_ratio)
+        presence_hyst_active = self._presence_hyst.update(presence_ratio)
 
-        # Subtract environmental periodic component from movement score
-        if self._periodic.learned or self._periodic.is_periodic:
-            movement_raw *= max(0.0, 1.0 - self._periodic.strength * 0.8)
-            presence_raw *= max(0.0, 1.0 - self._periodic.strength * 0.3)
+        # Breathing-band confirmation keeps presence alive for a still human.
+        # Gated on the static deviation ratio so a stale breathing window
+        # cannot hold presence after the person has left the room.
+        mean_amp = float(np.mean(amp_norm)) if amp_norm is not None else 0.0
+        breathing_detected = self._breathing.update(mean_amp)
 
-        presence_smooth = self._presence_ema.update(presence_raw)
-        movement_smooth = self._movement_ema.update(movement_raw)
-
-        presence_active = self._presence_hyst.update(presence_smooth)
-        movement_active = self._movement_hyst.update(movement_smooth) if presence_active else False
-
-        # Require real displacement for movement — not just signal noise
-        if movement_active and not self._sim_moving and displacement_factor < 0.35:
-            movement_active = False
+        presence_active = presence_hyst_active or movement_hyst_active or (
+            breathing_detected and self._was_person_visible and presence_ratio > 0.9
+        )
+        movement_active = movement_hyst_active and presence_active
 
         if not presence_active:
-            self._movement_hyst.reset()
+            self._motion_hyst.reset()
             movement_active = False
 
-        self._room_status = self._resolve_room_status(
-            presence_active,
-            movement_active,
-            movement_smooth,
-            self._periodic.learned,
-            self._periodic.is_periodic,
-        )
+        self._room_status = self._resolve_room_status(presence_active, movement_active)
 
         person_visible = presence_active and self._room_status not in (
             RoomStatus.ENVIRONMENTAL_ACTIVITY,
-            RoomStatus.BOOTING,
-            RoomStatus.BASELINE_ESTABLISHED,
         )
 
+        pos_error: float | None = None
         if person_visible:
-            x, y = self._estimate_position_from_signal(rssi, presence_smooth)
-
-            # Snap to estimated position on first appearance (avoid lerp from room center)
             if not self._was_person_visible:
-                self._display_x, self._display_y = x, y
-                self._est_x, self._est_y = x, y
-                self._kalman.reset(x, y)
-            else:
-                x, y = position_deadband(x, y, self._display_x, self._display_y, self._deadband)
-                self._display_x, self._display_y = x, y
+                self._snap_position(rssi)
+            elif movement_active:
+                self._update_position(rssi)
+            # Stationary: position frozen — no Kalman drift, no jitter
 
             self._was_person_visible = True
-            self._position_history.append((self._display_x, self._display_y))
 
-            # Position error vs ground truth (simulation only)
-            pos_error: float | None = None
             if self._sim_present and self._sim_x is not None and self._sim_y is not None:
                 pos_error = math.hypot(self._display_x - self._sim_x, self._display_y - self._sim_y)
 
             if movement_active:
-                self._velocity = self._kalman.velocity
-                self._direction = self._kalman.direction
-                if self._sim_moving:
-                    self._velocity = self._sim_velocity
-                    self._direction = self._sim_direction if self._sim_direction else None
+                self._velocity = self._sim_velocity if self._sim_moving else self._kalman.velocity
+                self._direction = (
+                    self._sim_direction if self._sim_moving and self._sim_direction else self._kalman.direction
+                )
             else:
                 self._velocity = 0.0
                 self._direction = None
         else:
-            x, y = self._display_x, self._display_y
-            pos_error = None
             self._velocity = 0.0
             self._direction = None
             self._was_person_visible = False
-            self._position_history.clear()
+            self._breathing.reset()
+
+        # --- Output probabilities: hard-gated, no stale EMA display ---
+        if movement_active:
+            movement_probability = min(1.0, 0.5 + 0.5 * min(1.0, motion_ratio / 4.0))
+        else:
+            movement_probability = 0.0
+
+        if presence_active:
+            presence_probability = min(1.0, 0.6 + 0.4 * min(1.0, presence_ratio / 3.0))
+        else:
+            presence_probability = min(0.45, max(0.0, presence_ratio - 0.4) * 0.5)
+
+        movement_intensity = movement_probability * 100.0 if movement_active else 0.0
 
         accuracy_radius = 0.3 if (pos_error is not None and pos_error < 0.3) else 0.5
 
-        intensity = movement_smooth * 100.0 if movement_active else 0.0
-        legacy_status = self._to_legacy_status(self._room_status, presence_active, movement_active)
-        waveform = amplitudes[:32] if amplitudes else [rssi / -100.0] * 32
-
-        return ProcessedReading(
-            timestamp=measurement.timestamp,
-            rssi=rssi,
-            presence_probability=round(presence_smooth, 3),
-            movement_probability=round(movement_smooth, 3),
-            movement_intensity=round(intensity, 1),
-            x=round(self._display_x, 2),
-            y=round(self._display_y, 2),
-            velocity=round(self._velocity, 2),
+        return self._make_reading(
+            measurement,
+            presence_probability=presence_probability,
+            movement_probability=movement_probability,
+            movement_intensity=movement_intensity,
+            velocity=self._velocity,
             direction=self._direction,
-            status=legacy_status,
+            status=self._to_legacy_status(presence_active, movement_active),
             room_status=self._room_status,
             person_visible=person_visible,
-            calibration_remaining_sec=None,
-            position_error_m=round(pos_error, 3) if pos_error is not None else None,
+            position_error_m=pos_error,
             accuracy_radius_m=accuracy_radius,
-            csi_waveform=[round(v, 4) for v in waveform],
             simulation_mode=simulation_mode,
-            room=self.room,
         )

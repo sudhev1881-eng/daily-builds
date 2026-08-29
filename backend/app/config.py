@@ -4,22 +4,41 @@ from pydantic_settings import BaseSettings
 
 
 class DetectionThresholds(BaseSettings):
-    """Configurable detection thresholds — override via WIFI_SENSE_DETECTION_ env prefix."""
+    """Configurable detection parameters — override via WIFI_SENSE_DETECTION_ env prefix.
+
+    Detection thresholds are ADAPTIVE: learned from the quiet calibration
+    period as percentile * headroom. Values here control the learning, not
+    fixed trigger levels.
+    """
 
     calibration_duration_sec: float = 10.0
-    presence_start_threshold: float = 0.65
-    presence_stop_threshold: float = 0.40
-    movement_start_threshold: float = 0.65
-    movement_stop_threshold: float = 0.35
-    presence_confirm_samples: int = 15
-    movement_confirm_samples: int = 20
-    movement_stop_samples: int = 30
-    position_deadband_m: float = 0.15
+
+    # Adaptive threshold learning (percentile of baseline scores * headroom)
+    motion_headroom: float = 1.5
+    motion_percentile: float = 95.0
+    motion_floor: float = 0.03
+    presence_headroom: float = 1.35
+    presence_percentile: float = 95.0
+    presence_floor: float = 0.5
+
+    # Turbulence sliding window (packets; 15 = 1.5 s at 10 Hz)
+    turbulence_window: int = 15
+
+    # Hysteresis (consecutive packets at 10 Hz)
+    motion_on_samples: int = 3
+    motion_off_samples: int = 10
+    presence_on_samples: int = 5
+    presence_off_samples: int = 30
+
+    # Breathing detection (stationary-human confirmation)
+    breathing_window: int = 200
+    breathing_ratio_threshold: float = 0.42
+
+    # Position stability
+    position_deadband_m: float = 0.08
     trail_min_distance_m: float = 0.25
-    ema_alpha: float = 0.12
-    noise_floor: float = 0.08
     environmental_learn_samples: int = 60
-    accuracy_mode: str = "high"  # "standard" or "high"
+    accuracy_mode: str = "high"
 
     class Config:
         env_prefix = "WIFI_SENSE_DETECTION_"
