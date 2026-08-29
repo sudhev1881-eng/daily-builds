@@ -49,7 +49,7 @@ from app.processing.csi_features import (
 )
 from app.processing.filters import HysteresisState, PeriodicDetector, position_deadband
 from app.processing.kalman import KalmanFilter2D
-from app.processing.positioning import estimate_position
+from app.processing.positioning import estimate_position, simulate_localization_measurement
 
 
 class _Track:
@@ -58,7 +58,10 @@ class _Track:
     def __init__(self, x: float, y: float) -> None:
         self.x = x
         self.y = y
-        self.kalman = KalmanFilter2D(x, y)
+        self.kalman = KalmanFilter2D(x, y, measurement_noise_m=dt.measurement_noise_m)
+        # Converge for a few frames after appearing or stopping, then freeze
+        self.settle = dt.settle_frames
+        self.was_moving = False
 
 
 class ProcessingPipeline:
@@ -171,23 +174,14 @@ class ProcessingPipeline:
     # Per-person tracking
     # ------------------------------------------------------------------
 
-    def _estimate_for_hint(self, rssi: float, track: _Track | None, hint: dict) -> tuple[float, float]:
-        return estimate_position(
-            rssi,
-            self.room,
-            track.x if track else hint["x"],
-            track.y if track else hint["y"],
-            sim_x=hint["x"],
-            sim_y=hint["y"],
-            sim_present=True,
-        )
-
     def _update_tracks(self, rssi: float, movement_active: bool) -> list[TrackedPerson]:
         """Maintain one position track per person hint.
 
-        Moving people get Kalman-smoothed updates; stationary people are
-        FROZEN in place (no drift). With no hints (real hardware), a single
-        aggregate track is estimated from RSSI.
+        Moving people get Kalman-smoothed updates at full rate. When a person
+        stops (or first appears) the track keeps converging for a few settle
+        frames — so stopping lag is not frozen in — then FREEZES (no drift).
+        With no hints (real hardware), a single aggregate track is estimated
+        from RSSI bilateration.
         """
         hints = self._sim_people
         if not hints:
@@ -219,23 +213,45 @@ class ProcessingPipeline:
             pid = hint["id"]
             active_ids.add(pid)
             track = self._tracks.get(pid)
+            # Track state follows the per-person hint; the signal-level
+            # movement gate only controls the DISPLAYED moving flag.
+            hint_moving = bool(hint["moving"])
+            person_moving = hint_moving and movement_active
 
             if track is None:
-                # New person: snap directly to estimate, no lerp from center
-                x, y = self._estimate_for_hint(rssi, None, hint)
-                track = _Track(x, y)
+                # New person: snap to first measurement, then settle-converge
+                mx, my = simulate_localization_measurement(
+                    hint["x"], hint["y"], self.room, dt.measurement_noise_m
+                )
+                track = _Track(mx, my)
                 self._tracks[pid] = track
-            elif hint["moving"] and movement_active:
-                raw_x, raw_y = self._estimate_for_hint(rssi, track, hint)
-                track.kalman.predict()
-                track.kalman.update(raw_x, raw_y)
-                kx, ky = track.kalman.position
-                nx = 0.55 * kx + 0.45 * track.x
-                ny = 0.55 * ky + 0.45 * track.y
-                track.x, track.y = position_deadband(nx, ny, track.x, track.y, self._deadband)
-            # else: stationary person — position frozen
+            else:
+                if hint_moving:
+                    track.settle = dt.settle_frames
+                    if not track.was_moving:
+                        track.kalman.resume()
+                    track.was_moving = True
+                else:
+                    if track.was_moving:
+                        # Stop transition: kill CV overshoot, then settle-average
+                        track.was_moving = False
+                        track.kalman.stop()
+                        track.settle = dt.settle_frames
+                    if track.settle > 0:
+                        track.settle -= 1
 
-            person_moving = bool(hint["moving"]) and movement_active
+                if hint_moving or track.settle > 0:
+                    mx, my = simulate_localization_measurement(
+                        hint["x"], hint["y"], self.room, dt.measurement_noise_m
+                    )
+                    track.kalman.predict()
+                    track.kalman.update(mx, my)
+                    kx, ky = track.kalman.position
+                    track.x, track.y = position_deadband(
+                        kx, ky, track.x, track.y, self._deadband
+                    )
+                # else: stationary and settled — position frozen
+
             people.append(
                 TrackedPerson(
                     id=pid,
@@ -440,7 +456,12 @@ class ProcessingPipeline:
 
         movement_intensity = movement_probability * 100.0 if movement_active else 0.0
 
-        accuracy_radius = 0.3 if (pos_error is not None and pos_error < 0.3) else 0.5
+        # Honest confidence: 2-sigma positional uncertainty of the primary track
+        if people and self._tracks:
+            primary = self._tracks.get(people[0].id) or next(iter(self._tracks.values()))
+            accuracy_radius = min(0.6, max(0.15, 2.0 * primary.kalman.position_std_m))
+        else:
+            accuracy_radius = 0.5
 
         return self._make_reading(
             measurement,

@@ -147,7 +147,7 @@ check("HUMAN MOVING sustained while walking",
       f"{moving_frames}/{len(walking_window)} frames")
 errors = [r.position_error_m for r in walk[20:] if r.position_error_m is not None]
 avg_err = sum(errors) / len(errors) if errors else 99
-check("position error < 0.5 m while walking", avg_err < 0.5, f"avg {avg_err:.2f} m")
+check("position error < 0.20 m while walking", avg_err < 0.20, f"avg {avg_err:.2f} m")
 check("person_count is 1", all(r.person_count == 1 for r in walk[20:] if r.person_visible))
 
 # ------------------------------------------------------------------
@@ -169,6 +169,9 @@ check("presence held for entire stationary period",
 check("status is OCCUPIED - STATIONARY",
       stationary_frames >= 0.95 * len(settled), f"{stationary_frames}/{len(settled)}")
 check("position frozen while stationary", len(positions) == 1, f"{len(positions)} unique positions")
+stat_errors = [r.position_error_m for r in settled if r.position_error_m is not None]
+avg_stat_err = sum(stat_errors) / len(stat_errors) if stat_errors else 99
+check("position error < 0.15 m while stationary", avg_stat_err < 0.15, f"avg {avg_stat_err:.2f} m")
 print(f"  breathing band ratio at end: {pipe._breathing.band_ratio:.2f}")
 
 # ------------------------------------------------------------------

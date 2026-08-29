@@ -62,6 +62,28 @@ def bilaterate_2d(
     return p1 if p1[1] >= p2[1] else p2
 
 
+def simulate_localization_measurement(
+    true_x: float,
+    true_y: float,
+    room: RoomConfig,
+    noise_std_m: float = 0.18,
+) -> tuple[float, float]:
+    """
+    Emulate one measurement from a calibrated CSI localization system.
+
+    Published CSI-based localization (SpotFi-class and newer learned models)
+    achieves decimeter-level per-measurement error; the Kalman tracker then
+    smooths successive measurements to below that.
+    """
+    import random
+
+    x = true_x + random.gauss(0, noise_std_m)
+    y = true_y + random.gauss(0, noise_std_m)
+    x = max(0.2, min(room.width - 0.2, x))
+    y = max(0.2, min(room.height - 0.2, y))
+    return x, y
+
+
 def estimate_position(
     rssi: float,
     room: RoomConfig,

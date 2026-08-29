@@ -34,8 +34,10 @@ class DetectionThresholds(BaseSettings):
     breathing_window: int = 200
     breathing_ratio_threshold: float = 0.42
 
-    # Position stability
-    position_deadband_m: float = 0.08
+    # Position tracking
+    position_deadband_m: float = 0.04
+    measurement_noise_m: float = 0.18
+    settle_frames: int = 25  # extra tracked frames after a person stops (2.5 s averaging)
     trail_min_distance_m: float = 0.25
     environmental_learn_samples: int = 60
     accuracy_mode: str = "high"
