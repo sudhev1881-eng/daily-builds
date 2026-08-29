@@ -16,8 +16,11 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.models import ProcessedReading, RawMeasurement, RoomConfig
@@ -175,3 +178,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await update_config(config)
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
+
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")

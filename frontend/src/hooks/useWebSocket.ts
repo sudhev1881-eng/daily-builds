@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { WS_URL } from "../config";
 import type { ProcessedReading, RoomConfig } from "../types/sensor";
-
-const WS_URL =
-  import.meta.env.VITE_WS_URL ||
-  `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000/ws`;
 
 interface UseWebSocketReturn {
   reading: ProcessedReading | null;

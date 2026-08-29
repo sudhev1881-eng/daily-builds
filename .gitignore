@@ -146,4 +146,10 @@ vite.config.ts.timestamp-*
 __pycache__/
 *.py[cod]
 backend/venv/
+backend/static/
 .venv/
+
+# Deployment runtime artifacts
+.bin/
+.run/
+PUBLIC_URL.txt
