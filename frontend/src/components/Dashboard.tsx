@@ -142,8 +142,9 @@ export function Dashboard() {
               direction={reading?.direction ?? null}
               trails={trails}
               heatmap={heatmap}
-              movementDetected={personMoving}
-            />
+            movementDetected={personMoving}
+            accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
+          />
             <CalibrationOverlay
               remaining={reading?.calibration_remaining_sec ?? null}
               roomStatus={roomStatus}
@@ -164,6 +165,9 @@ export function Dashboard() {
             movementProbability={reading?.movement_probability ?? 0}
             timestamp={reading?.timestamp ?? null}
             connected={connected}
+            positionError={reading?.position_error_m ?? null}
+            accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
+            simulationMode={simulationMode}
           />
           <MovementMeter
             intensity={reading?.movement_intensity ?? 0}

@@ -21,6 +21,8 @@ from app.processing.filters import (
     PeriodicDetector,
     position_deadband,
 )
+from app.processing.kalman import KalmanFilter2D
+from app.processing.positioning import estimate_position
 
 
 class ProcessingPipeline:
@@ -74,6 +76,9 @@ class ProcessingPipeline:
         self._prev_csi_amp: np.ndarray | None = None
         self._position_history: deque[tuple[float, float]] = deque(maxlen=10)
         self._was_person_visible = False
+        self._kalman = KalmanFilter2D(self._est_x, self._est_y)
+        self._high_accuracy = dt.accuracy_mode == "high"
+        self._deadband = 0.08 if self._high_accuracy else dt.position_deadband_m
 
     def set_simulator_state(
         self,
@@ -134,24 +139,34 @@ class ProcessingPipeline:
         displacement = math.hypot(newest[0] - oldest[0], newest[1] - oldest[1])
         return min(1.0, displacement / (dt.position_deadband_m * 3))
 
-    def _estimate_position_from_signal(self, presence_score: float) -> tuple[float, float]:
-        """Estimate position using simulator hint only when presence is confirmed."""
-        if self._sim_present and self._sim_x is not None and self._sim_y is not None:
-            jitter = 0.02 if not self._sim_moving else 0.01
-            x = float(np.clip(self._sim_x + np.random.normal(0, jitter), 0.3, self.room.width - 0.3))
-            y = float(np.clip(self._sim_y + np.random.normal(0, jitter), 0.3, self.room.height - 0.3))
-        else:
-            x, y = self._display_x, self._display_y
+    def _estimate_position_from_signal(self, rssi: float, presence_score: float) -> tuple[float, float]:
+        """Fuse RSSI bilateration, simulator hint, and Kalman smoothing."""
+        raw_x, raw_y = estimate_position(
+            rssi,
+            self.room,
+            self._display_x,
+            self._display_y,
+            sim_x=self._sim_x,
+            sim_y=self._sim_y,
+            sim_present=self._sim_present,
+        )
+
+        if not self._was_person_visible:
+            self._kalman.reset(raw_x, raw_y)
+
+        self._kalman.predict()
+        self._kalman.update(raw_x, raw_y)
+        kx, ky = self._kalman.position
 
         if presence_score > dt.presence_stop_threshold:
             if self._sim_moving:
-                alpha = 0.45  # fast tracking while walking
+                alpha = 0.55 if self._high_accuracy else 0.45
             elif self._was_person_visible:
-                alpha = 0.12  # stable when stationary
+                alpha = 0.20 if self._high_accuracy else 0.12
             else:
-                alpha = 1.0  # snap on first detection
-            self._est_x = alpha * x + (1 - alpha) * self._est_x
-            self._est_y = alpha * y + (1 - alpha) * self._est_y
+                alpha = 1.0
+            self._est_x = alpha * kx + (1 - alpha) * self._est_x
+            self._est_y = alpha * ky + (1 - alpha) * self._est_y
 
         return self._est_x, self._est_y
 
@@ -313,24 +328,28 @@ class ProcessingPipeline:
         )
 
         if person_visible:
-            x, y = self._estimate_position_from_signal(presence_smooth)
+            x, y = self._estimate_position_from_signal(rssi, presence_smooth)
 
             # Snap to estimated position on first appearance (avoid lerp from room center)
             if not self._was_person_visible:
                 self._display_x, self._display_y = x, y
                 self._est_x, self._est_y = x, y
+                self._kalman.reset(x, y)
             else:
-                x, y = position_deadband(x, y, self._display_x, self._display_y, dt.position_deadband_m)
+                x, y = position_deadband(x, y, self._display_x, self._display_y, self._deadband)
                 self._display_x, self._display_y = x, y
 
             self._was_person_visible = True
             self._position_history.append((self._display_x, self._display_y))
 
+            # Position error vs ground truth (simulation only)
+            pos_error: float | None = None
+            if self._sim_present and self._sim_x is not None and self._sim_y is not None:
+                pos_error = math.hypot(self._display_x - self._sim_x, self._display_y - self._sim_y)
+
             if movement_active:
-                dx = x - self._last_trail_x
-                dy = y - self._last_trail_y
-                self._velocity = math.hypot(dx, dy) * 10
-                self._direction = math.atan2(dy, dx) if self._velocity > 0.05 else None
+                self._velocity = self._kalman.velocity
+                self._direction = self._kalman.direction
                 if self._sim_moving:
                     self._velocity = self._sim_velocity
                     self._direction = self._sim_direction if self._sim_direction else None
@@ -339,10 +358,13 @@ class ProcessingPipeline:
                 self._direction = None
         else:
             x, y = self._display_x, self._display_y
+            pos_error = None
             self._velocity = 0.0
             self._direction = None
             self._was_person_visible = False
             self._position_history.clear()
+
+        accuracy_radius = 0.3 if (pos_error is not None and pos_error < 0.3) else 0.5
 
         intensity = movement_smooth * 100.0 if movement_active else 0.0
         legacy_status = self._to_legacy_status(self._room_status, presence_active, movement_active)
@@ -362,6 +384,8 @@ class ProcessingPipeline:
             room_status=self._room_status,
             person_visible=person_visible,
             calibration_remaining_sec=None,
+            position_error_m=round(pos_error, 3) if pos_error is not None else None,
+            accuracy_radius_m=accuracy_radius,
             csi_waveform=[round(v, 4) for v in waveform],
             simulation_mode=simulation_mode,
             room=self.room,

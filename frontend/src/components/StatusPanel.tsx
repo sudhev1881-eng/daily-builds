@@ -6,6 +6,9 @@ interface StatusPanelProps {
   movementProbability: number;
   timestamp: string | null;
   connected: boolean;
+  positionError: number | null;
+  accuracyRadius: number;
+  simulationMode: boolean;
 }
 
 const statusConfig: Record<
@@ -52,6 +55,9 @@ export function StatusPanel({
   movementProbability,
   timestamp,
   connected,
+  positionError,
+  accuracyRadius,
+  simulationMode,
 }: StatusPanelProps) {
   const cfg = statusConfig[roomStatus] ?? statusConfig["ROOM EMPTY"];
 
@@ -94,6 +100,17 @@ export function StatusPanel({
         <p className="mt-3 font-mono text-[10px] text-slate-600">
           Last update: {new Date(timestamp).toLocaleTimeString()}
         </p>
+      )}
+
+      {simulationMode && positionError !== null && (
+        <div className="mt-2 rounded-lg bg-slate-800/50 px-3 py-2">
+          <p className="font-mono text-[10px] text-slate-500">
+            Position error: <span className="text-sky-400">{positionError.toFixed(2)}m</span>
+          </p>
+          <p className="font-mono text-[10px] text-slate-500">
+            Accuracy radius: <span className="text-sky-400">±{accuracyRadius.toFixed(1)}m</span>
+          </p>
+        </div>
       )}
     </div>
   );

@@ -11,6 +11,7 @@ interface RoomVisualizationProps {
   trails: TrailPoint[];
   heatmap: HeatmapCell[];
   movementDetected: boolean;
+  accuracyRadius: number;
 }
 
 const PADDING = 48;
@@ -37,6 +38,7 @@ export function RoomVisualization({
   trails,
   heatmap,
   movementDetected,
+  accuracyRadius,
 }: RoomVisualizationProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -51,6 +53,7 @@ export function RoomVisualization({
     trails,
     heatmap,
     movementDetected,
+    accuracyRadius,
   });
   const layoutRef = useRef<Layout | null>(null);
   const smoothPos = useRef({ x: personX, y: personY });
@@ -70,6 +73,7 @@ export function RoomVisualization({
     trails,
     heatmap,
     movementDetected,
+    accuracyRadius,
   };
 
   if (personVisible) {
@@ -270,6 +274,16 @@ export function RoomVisualization({
       ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
       ctx.fillStyle = p.personMoving ? "#34d399" : "#6ee7b7";
       ctx.fill();
+
+      // Accuracy uncertainty circle
+      const radiusPx = p.accuracyRadius * layout.scale;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, radiusPx, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(52,211,153,0.25)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
       ctx.strokeStyle = "rgba(255,255,255,0.4)";
       ctx.lineWidth = 1.5;
       ctx.stroke();

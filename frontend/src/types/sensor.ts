@@ -39,6 +39,8 @@ export interface ProcessedReading {
   room_status: RoomStatus;
   person_visible: boolean;
   calibration_remaining_sec: number | null;
+  position_error_m: number | null;
+  accuracy_radius_m: number;
   csi_waveform: number[];
   simulation_mode: boolean;
   room: RoomConfig;

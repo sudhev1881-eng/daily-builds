@@ -63,6 +63,8 @@ class ProcessedReading(BaseModel):
     room_status: RoomStatus
     person_visible: bool = False
     calibration_remaining_sec: Optional[float] = None
+    position_error_m: Optional[float] = None
+    accuracy_radius_m: float = 0.5
     csi_waveform: list[float] = Field(default_factory=list)
     simulation_mode: bool = True
     room: RoomConfig

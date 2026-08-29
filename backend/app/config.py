@@ -19,6 +19,7 @@ class DetectionThresholds(BaseSettings):
     ema_alpha: float = 0.12
     noise_floor: float = 0.08
     environmental_learn_samples: int = 60
+    accuracy_mode: str = "high"  # "standard" or "high"
 
     class Config:
         env_prefix = "WIFI_SENSE_DETECTION_"
