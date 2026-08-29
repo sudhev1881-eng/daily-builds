@@ -32,6 +32,7 @@ export function Dashboard() {
   const [heatmap, setHeatmap] = useState<HeatmapCell[]>([]);
   const heatmapRef = useRef<Map<string, number>>(new Map());
   const lastTrailPos = useRef<{ x: number; y: number } | null>(null);
+  const lastKnownPos = useRef({ x: 4, y: 3 });
 
   const currentRoom = room || reading?.room || DEFAULT_ROOM;
   const roomStatus: RoomStatus = reading?.room_status ?? "BOOTING";
@@ -40,9 +41,12 @@ export function Dashboard() {
   const personVisible = reading?.person_visible ?? false;
   const personMoving = roomStatus === "HUMAN MOVING";
 
-  // Stable person coordinates — only pass live position when person is visible
-  const displayX = personVisible ? (reading?.x ?? currentRoom.width / 2) : currentRoom.width / 2;
-  const displayY = personVisible ? (reading?.y ?? currentRoom.height / 2) : currentRoom.height / 2;
+  if (personVisible && reading) {
+    lastKnownPos.current = { x: reading.x, y: reading.y };
+  }
+
+  const displayX = reading?.x ?? lastKnownPos.current.x;
+  const displayY = reading?.y ?? lastKnownPos.current.y;
 
   useEffect(() => {
     if (!reading) return;

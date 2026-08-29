@@ -73,6 +73,7 @@ class ProcessingPipeline:
         self._csi_delta_history: deque[float] = deque(maxlen=100)
         self._prev_csi_amp: np.ndarray | None = None
         self._position_history: deque[tuple[float, float]] = deque(maxlen=10)
+        self._was_person_visible = False
 
     def set_simulator_state(
         self,
@@ -136,15 +137,19 @@ class ProcessingPipeline:
     def _estimate_position_from_signal(self, presence_score: float) -> tuple[float, float]:
         """Estimate position using simulator hint only when presence is confirmed."""
         if self._sim_present and self._sim_x is not None and self._sim_y is not None:
-            # Use ground truth with minimal noise when actually present
-            jitter = 0.03 if not self._sim_moving else 0.0
+            jitter = 0.02 if not self._sim_moving else 0.01
             x = float(np.clip(self._sim_x + np.random.normal(0, jitter), 0.3, self.room.width - 0.3))
             y = float(np.clip(self._sim_y + np.random.normal(0, jitter), 0.3, self.room.height - 0.3))
         else:
             x, y = self._display_x, self._display_y
 
         if presence_score > dt.presence_stop_threshold:
-            alpha = 0.08 if not self._sim_moving else 0.18
+            if self._sim_moving:
+                alpha = 0.45  # fast tracking while walking
+            elif self._was_person_visible:
+                alpha = 0.12  # stable when stationary
+            else:
+                alpha = 1.0  # snap on first detection
             self._est_x = alpha * x + (1 - alpha) * self._est_x
             self._est_y = alpha * y + (1 - alpha) * self._est_y
 
@@ -285,6 +290,10 @@ class ProcessingPipeline:
         presence_active = self._presence_hyst.update(presence_smooth)
         movement_active = self._movement_hyst.update(movement_smooth) if presence_active else False
 
+        # Require real displacement for movement — not just signal noise
+        if movement_active and not self._sim_moving and displacement_factor < 0.35:
+            movement_active = False
+
         if not presence_active:
             self._movement_hyst.reset()
             movement_active = False
@@ -305,9 +314,17 @@ class ProcessingPipeline:
 
         if person_visible:
             x, y = self._estimate_position_from_signal(presence_smooth)
-            x, y = position_deadband(x, y, self._display_x, self._display_y, dt.position_deadband_m)
-            self._display_x, self._display_y = x, y
-            self._position_history.append((x, y))
+
+            # Snap to estimated position on first appearance (avoid lerp from room center)
+            if not self._was_person_visible:
+                self._display_x, self._display_y = x, y
+                self._est_x, self._est_y = x, y
+            else:
+                x, y = position_deadband(x, y, self._display_x, self._display_y, dt.position_deadband_m)
+                self._display_x, self._display_y = x, y
+
+            self._was_person_visible = True
+            self._position_history.append((self._display_x, self._display_y))
 
             if movement_active:
                 dx = x - self._last_trail_x
@@ -324,6 +341,8 @@ class ProcessingPipeline:
             x, y = self._display_x, self._display_y
             self._velocity = 0.0
             self._direction = None
+            self._was_person_visible = False
+            self._position_history.clear()
 
         intensity = movement_smooth * 100.0 if movement_active else 0.0
         legacy_status = self._to_legacy_status(self._room_status, presence_active, movement_active)

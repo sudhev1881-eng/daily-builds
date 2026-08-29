@@ -55,6 +55,7 @@ export function RoomVisualization({
   const layoutRef = useRef<Layout | null>(null);
   const smoothPos = useRef({ x: personX, y: personY });
   const targetPos = useRef({ x: personX, y: personY });
+  const wasVisibleRef = useRef(false);
   const pulsePhase = useRef(0);
   const animRef = useRef(0);
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
@@ -74,9 +75,15 @@ export function RoomVisualization({
   if (personVisible) {
     const dx = personX - targetPos.current.x;
     const dy = personY - targetPos.current.y;
-    if (Math.hypot(dx, dy) >= POSITION_DEADBAND || personMoving) {
+    if (!wasVisibleRef.current || Math.hypot(dx, dy) >= POSITION_DEADBAND || personMoving) {
       targetPos.current = { x: personX, y: personY };
     }
+    if (!wasVisibleRef.current) {
+      smoothPos.current = { x: personX, y: personY };
+    }
+    wasVisibleRef.current = true;
+  } else {
+    wasVisibleRef.current = false;
   }
 
   function computeLayout(w: number, h: number, r: RoomConfig): Layout {
@@ -240,10 +247,15 @@ export function RoomVisualization({
     drawSensor(r.router.x, r.router.y, "ROUTER", "#0ea5e9", "📡");
     drawSensor(r.receiver.x, r.receiver.y, "RECEIVER", "#8b5cf6", "📶");
 
-    // Person
+    // Person — snap on appear, smooth only while tracking
     if (p.personVisible) {
-      smoothPos.current.x += (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
-      smoothPos.current.y += (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
+      if (p.personMoving) {
+        smoothPos.current.x += (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
+        smoothPos.current.y += (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
+      } else {
+        smoothPos.current.x = targetPos.current.x;
+        smoothPos.current.y = targetPos.current.y;
+      }
       const pos = worldToScreen(smoothPos.current.x, smoothPos.current.y, layout, r.height);
 
       if (p.personMoving) {

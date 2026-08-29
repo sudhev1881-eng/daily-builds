@@ -43,7 +43,7 @@ class WiFiSimulator(BaseSensor):
         self._target_x = self.person_x
         self._target_y = self.person_y
         self._walk_speed = 0.0
-        self._idle_duration = random.uniform(20, 40)
+        self._idle_duration = random.uniform(12, 20)
 
         # Environmental: fan always running
         self.fan_running = True
@@ -179,9 +179,9 @@ class WiFiSimulator(BaseSensor):
 
         body_attenuation = 0.0
         if self.person_present:
-            body_attenuation = 6.0 / max(router_dist, 1.0)
+            body_attenuation = 10.0 / max(router_dist, 1.0)
             if self.person_moving:
-                body_attenuation += 2.0 * math.sin(t * 8 + self._noise_seed)
+                body_attenuation += 3.0 * math.sin(t * 8 + self._noise_seed)
 
         fan_effect = self._fan_signal(t, 0) * 3.0
         noise = random.gauss(0, 0.4)
