@@ -101,7 +101,7 @@ export function Dashboard() {
   }, [reading]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <SimulationBanner active={simulationMode} />
 
       <header className="flex items-center justify-between border-b border-slate-800/50 px-6 py-3">
@@ -125,26 +125,35 @@ export function Dashboard() {
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[1fr_320px] lg:grid-rows-[1fr_auto]">
-        <div className="relative min-h-[300px] lg:row-span-2">
-          <RoomVisualization
-            room={currentRoom}
-            personX={displayX}
-            personY={displayY}
-            personVisible={personVisible && !isCalibrating}
-            personMoving={personMoving}
-            direction={reading?.direction ?? null}
-            trails={trails}
-            heatmap={heatmap}
-            movementDetected={personMoving}
-          />
-          <CalibrationOverlay
-            remaining={reading?.calibration_remaining_sec ?? null}
-            roomStatus={roomStatus}
-          />
+      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3 lg:flex-row">
+        {/* Left column: room + charts */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+          <div className="relative min-h-[280px] flex-1">
+            <RoomVisualization
+              room={currentRoom}
+              personX={displayX}
+              personY={displayY}
+              personVisible={personVisible && !isCalibrating}
+              personMoving={personMoving}
+              direction={reading?.direction ?? null}
+              trails={trails}
+              heatmap={heatmap}
+              movementDetected={personMoving}
+            />
+            <CalibrationOverlay
+              remaining={reading?.calibration_remaining_sec ?? null}
+              roomStatus={roomStatus}
+            />
+          </div>
+
+          <div className="grid h-[160px] shrink-0 grid-cols-1 gap-3 sm:grid-cols-2">
+            <SignalGraph data={rssiHistory} />
+            <WaveformChart waveform={reading?.csi_waveform ?? []} />
+          </div>
         </div>
 
-        <div className="flex flex-col gap-3 overflow-y-auto">
+        {/* Right sidebar */}
+        <aside className="flex max-h-[40vh] shrink-0 flex-col gap-3 overflow-y-auto lg:max-h-none lg:w-80">
           <StatusPanel
             roomStatus={roomStatus}
             presenceProbability={reading?.presence_probability ?? 0}
@@ -158,12 +167,7 @@ export function Dashboard() {
             direction={reading?.direction ?? null}
           />
           <ConfigPanel room={currentRoom} onUpdate={sendConfig} />
-        </div>
-
-        <div className="grid min-h-[180px] grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-1">
-          <SignalGraph data={rssiHistory} />
-          <WaveformChart waveform={reading?.csi_waveform ?? []} />
-        </div>
+        </aside>
       </main>
 
       <footer className="border-t border-slate-800/50 px-6 py-2">

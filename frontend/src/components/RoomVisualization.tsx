@@ -13,10 +13,11 @@ interface RoomVisualizationProps {
   movementDetected: boolean;
 }
 
-const PADDING = 60;
+const PADDING = 48;
 const GRID_SIZE = 1.0;
 const POSITION_DEADBAND = 0.15;
 const LERP_FACTOR = 0.12;
+const MIN_CANVAS_SIZE = 10;
 
 interface Layout {
   scale: number;
@@ -24,8 +25,6 @@ interface Layout {
   offsetY: number;
   roomPxW: number;
   roomPxH: number;
-  canvasW: number;
-  canvasH: number;
 }
 
 export function RoomVisualization({
@@ -42,7 +41,6 @@ export function RoomVisualization({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Stable refs — animation loop reads these without restarting on every prop change
   const roomRef = useRef(room);
   const propsRef = useRef({
     personX,
@@ -73,7 +71,6 @@ export function RoomVisualization({
     movementDetected,
   };
 
-  // Update person target with deadband
   if (personVisible) {
     const dx = personX - targetPos.current.x;
     const dy = personY - targetPos.current.y;
@@ -82,17 +79,19 @@ export function RoomVisualization({
     }
   }
 
-  function computeLayout(canvasW: number, canvasH: number, r: RoomConfig): Layout {
-    const availW = canvasW - PADDING * 2;
-    const availH = canvasH - PADDING * 2;
-    const scaleX = availW / r.width;
-    const scaleY = availH / r.height;
-    const scale = Math.min(scaleX, scaleY);
+  function computeLayout(w: number, h: number, r: RoomConfig): Layout {
+    const availW = w - PADDING * 2;
+    const availH = h - PADDING * 2;
+    const scale = Math.min(availW / r.width, availH / r.height);
     const roomPxW = r.width * scale;
     const roomPxH = r.height * scale;
-    const offsetX = (canvasW - roomPxW) / 2;
-    const offsetY = (canvasH - roomPxH) / 2;
-    return { scale, offsetX, offsetY, roomPxW, roomPxH, canvasW, canvasH };
+    return {
+      scale,
+      offsetX: (w - roomPxW) / 2,
+      offsetY: (h - roomPxH) / 2,
+      roomPxW,
+      roomPxH,
+    };
   }
 
   function worldToScreen(wx: number, wy: number, layout: Layout, roomHeight: number) {
@@ -102,32 +101,36 @@ export function RoomVisualization({
     };
   }
 
-  function resizeCanvas() {
+  function syncLayout(forceLayout = false): boolean {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!canvas || !container) return false;
 
-    const rect = container.getBoundingClientRect();
-    const w = Math.floor(rect.width);
-    const h = Math.floor(rect.height);
-    if (w <= 0 || h <= 0) return;
+    const w = Math.round(container.clientWidth);
+    const h = Math.round(container.clientHeight);
+    if (w < MIN_CANVAS_SIZE || h < MIN_CANVAS_SIZE) return false;
 
     const dpr = window.devicePixelRatio || 1;
+    const sizeChanged =
+      sizeRef.current.w !== w ||
+      sizeRef.current.h !== h ||
+      sizeRef.current.dpr !== dpr;
 
-    // Only touch canvas dimensions when size actually changed
-    if (sizeRef.current.w !== w || sizeRef.current.h !== h || sizeRef.current.dpr !== dpr) {
+    if (sizeChanged) {
       sizeRef.current = { w, h, dpr };
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
       layoutRef.current = computeLayout(w, h, roomRef.current);
+    } else if (forceLayout) {
+      layoutRef.current = computeLayout(w, h, roomRef.current);
     }
+
+    return layoutRef.current !== null;
   }
 
   function draw() {
-    resizeCanvas();
-
     const canvas = canvasRef.current;
     const layout = layoutRef.current;
     if (!canvas || !layout) {
@@ -144,27 +147,11 @@ export function RoomVisualization({
     const { w, h, dpr } = sizeRef.current;
     const r = roomRef.current;
     const p = propsRef.current;
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
     const { scale, offsetX, offsetY, roomPxW, roomPxH } = layout;
 
-    // --- Static room layer (never moves once layout is set) ---
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#060a12";
     ctx.fillRect(0, 0, w, h);
-
-    // Fixed screen-space anchor dots to verify room is not drifting
-    ctx.fillStyle = "rgba(56,189,248,0.15)";
-    for (const [ax, ay] of [
-      [8, 8],
-      [w - 8, 8],
-      [8, h - 8],
-      [w - 8, h - 8],
-    ]) {
-      ctx.beginPath();
-      ctx.arc(ax, ay, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
 
     // Grid
     ctx.strokeStyle = "rgba(56,189,248,0.06)";
@@ -184,7 +171,6 @@ export function RoomVisualization({
       ctx.stroke();
     }
 
-    // Room floor
     ctx.fillStyle = "rgba(15,23,42,0.5)";
     ctx.fillRect(offsetX, offsetY, roomPxW, roomPxH);
 
@@ -194,39 +180,17 @@ export function RoomVisualization({
       if (cell.intensity < 0.05) continue;
       const pos = worldToScreen(cell.x, cell.y, layout, r.height);
       const alpha = Math.min(cell.intensity * 0.5, 0.6);
-      const gradient = ctx.createRadialGradient(
-        pos.x, pos.y, 0, pos.x, pos.y, cellSize
-      );
+      const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, cellSize);
       gradient.addColorStop(0, `rgba(56,189,248,${alpha})`);
       gradient.addColorStop(1, "rgba(56,189,248,0)");
       ctx.fillStyle = gradient;
       ctx.fillRect(pos.x - cellSize, pos.y - cellSize, cellSize * 2, cellSize * 2);
     }
 
-    // Walls — fixed rectangle, never follows person
+    // Walls
     ctx.strokeStyle = "rgba(56,189,248,0.4)";
     ctx.lineWidth = 2;
     ctx.strokeRect(offsetX, offsetY, roomPxW, roomPxH);
-
-    // Corner accents
-    const cornerLen = 12;
-    ctx.strokeStyle = "rgba(56,189,248,0.7)";
-    ctx.lineWidth = 2;
-    const corners: [number, number][] = [
-      [offsetX, offsetY],
-      [offsetX + roomPxW, offsetY],
-      [offsetX, offsetY + roomPxH],
-      [offsetX + roomPxW, offsetY + roomPxH],
-    ];
-    for (const [cx, cy] of corners) {
-      const cdx = cx === offsetX ? 1 : -1;
-      const cdy = cy === offsetY ? 1 : -1;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy + cdy * cornerLen);
-      ctx.lineTo(cx, cy);
-      ctx.lineTo(cx + cdx * cornerLen, cy);
-      ctx.stroke();
-    }
 
     // Trails
     const now = Date.now();
@@ -242,18 +206,8 @@ export function RoomVisualization({
       }
       ctx.stroke();
     }
-    for (const trail of recentTrails) {
-      const age = (now - trail.timestamp) / 8000;
-      if (age > 1) continue;
-      const pos = worldToScreen(trail.x, trail.y, layout, r.height);
-      const alpha = (1 - age) * trail.intensity * 0.7;
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, 3 * (1 - age * 0.5), 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(56,189,248,${alpha})`;
-      ctx.fill();
-    }
 
-    // Sensors — fixed world positions
+    // Sensors
     pulsePhase.current += 0.03;
     const drawSensor = (sx: number, sy: number, label: string, color: string, icon: string) => {
       const pos = worldToScreen(sx, sy, layout, r.height);
@@ -274,34 +228,22 @@ export function RoomVisualization({
       ctx.strokeStyle = "rgba(255,255,255,0.3)";
       ctx.lineWidth = 1.5;
       ctx.stroke();
-
       ctx.fillStyle = "#e2e8f0";
       ctx.font = "10px JetBrains Mono";
       ctx.textAlign = "center";
       ctx.fillText(icon, pos.x, pos.y + 4);
       ctx.fillStyle = "#64748b";
       ctx.font = "9px JetBrains Mono";
-      ctx.fillText(label, pos.x, pos.y - 16);
-      ctx.fillText(`(${sx.toFixed(1)}, ${sy.toFixed(1)})`, pos.x, pos.y + 22);
+      ctx.fillText(label, pos.x, pos.y - 14);
     };
 
     drawSensor(r.router.x, r.router.y, "ROUTER", "#0ea5e9", "📡");
     drawSensor(r.receiver.x, r.receiver.y, "RECEIVER", "#8b5cf6", "📶");
 
-    // Fan — fixed position
-    const fanPos = worldToScreen(r.width * 0.75, r.height * 0.3, layout, r.height);
-    ctx.fillStyle = "rgba(251,191,36,0.4)";
-    ctx.font = "9px JetBrains Mono";
-    ctx.textAlign = "center";
-    ctx.fillText("FAN", fanPos.x, fanPos.y - 8);
-
-    // Person marker — only this moves inside the fixed room
+    // Person
     if (p.personVisible) {
-      smoothPos.current.x +=
-        (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
-      smoothPos.current.y +=
-        (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
-
+      smoothPos.current.x += (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
+      smoothPos.current.y += (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
       const pos = worldToScreen(smoothPos.current.x, smoothPos.current.y, layout, r.height);
 
       if (p.personMoving) {
@@ -321,9 +263,8 @@ export function RoomVisualization({
       ctx.stroke();
 
       if (p.direction !== null && p.personMoving) {
-        const arrowLen = 18;
-        const ax = pos.x + Math.cos(p.direction) * arrowLen;
-        const ay = pos.y - Math.sin(p.direction) * arrowLen;
+        const ax = pos.x + Math.cos(p.direction) * 18;
+        const ay = pos.y - Math.sin(p.direction) * 18;
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
         ctx.lineTo(ax, ay);
@@ -331,53 +272,26 @@ export function RoomVisualization({
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-
-      ctx.fillStyle = "#94a3b8";
-      ctx.font = "9px JetBrains Mono";
-      ctx.textAlign = "center";
-      ctx.fillText("ESTIMATED", pos.x, pos.y - 18);
-      ctx.fillStyle = "#64748b";
-      ctx.font = "8px JetBrains Mono";
-      ctx.fillText(
-        `(${smoothPos.current.x.toFixed(1)}, ${smoothPos.current.y.toFixed(1)})m`,
-        pos.x,
-        pos.y + 24
-      );
     }
 
-    // Origin
-    const origin = worldToScreen(0, 0, layout, r.height);
-    ctx.fillStyle = "rgba(100,116,139,0.5)";
-    ctx.font = "8px JetBrains Mono";
-    ctx.textAlign = "left";
-    ctx.fillText("(0,0)", origin.x + 4, origin.y - 4);
-
-    // Dimension labels
+    // Labels
     ctx.fillStyle = "#475569";
     ctx.font = "10px JetBrains Mono";
     ctx.textAlign = "center";
-    ctx.fillText(`${r.width}m`, offsetX + roomPxW / 2, offsetY - 10);
-    ctx.save();
-    ctx.translate(offsetX - 15, offsetY + roomPxH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText(`${r.height}m`, 0, 0);
-    ctx.restore();
+    ctx.fillText(`${r.width}m`, offsetX + roomPxW / 2, offsetY - 8);
 
     animRef.current = requestAnimationFrame(draw);
   }
 
-  // Single stable animation loop — never restarted by prop changes
   useEffect(() => {
-    layoutRef.current = null;
-    resizeCanvas();
+    syncLayout(true);
     animRef.current = requestAnimationFrame(draw);
 
     const container = containerRef.current;
     if (!container) return () => cancelAnimationFrame(animRef.current);
 
     const observer = new ResizeObserver(() => {
-      layoutRef.current = null; // recompute layout only on real resize
-      resizeCanvas();
+      syncLayout(true);
     });
     observer.observe(container);
 
@@ -388,27 +302,21 @@ export function RoomVisualization({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Recompute layout when room dimensions change (config panel)
   useEffect(() => {
-    layoutRef.current = null;
-    resizeCanvas();
+    syncLayout(true);
   }, [room.width, room.height, room.router.x, room.router.y, room.receiver.x, room.receiver.y]);
 
   return (
     <div
       ref={containerRef}
-      className="glass-panel relative h-full w-full overflow-hidden"
+      className="glass-panel absolute inset-0 overflow-hidden"
     >
       <div className="pointer-events-none absolute top-3 left-3 z-10">
         <span className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
-          Room Map — Fixed View
+          Room Map
         </span>
       </div>
-      <canvas
-        ref={canvasRef}
-        className="block h-full w-full"
-        style={{ touchAction: "none" }}
-      />
+      <canvas ref={canvasRef} className="block h-full w-full" style={{ touchAction: "none" }} />
     </div>
   );
 }
