@@ -1,9 +1,12 @@
-import type { RoomStatus } from "../types/sensor";
+import type { RoomStatus, TrackedPerson } from "../types/sensor";
+import { personColor } from "../types/sensor";
 
 interface StatusPanelProps {
   roomStatus: RoomStatus;
   presenceProbability: number;
   movementProbability: number;
+  personCount: number;
+  people: TrackedPerson[];
   timestamp: string | null;
   connected: boolean;
   positionError: number | null;
@@ -53,6 +56,8 @@ export function StatusPanel({
   roomStatus,
   presenceProbability,
   movementProbability,
+  personCount,
+  people,
   timestamp,
   connected,
   positionError,
@@ -81,7 +86,41 @@ export function StatusPanel({
         <p className={`font-mono text-lg font-semibold ${cfg.color}`}>
           {roomStatus}
         </p>
+        {personCount > 0 && (
+          <p className="mt-1 font-mono text-[11px] text-slate-400">
+            {personCount} {personCount === 1 ? "person" : "people"} detected
+          </p>
+        )}
       </div>
+
+      {people.length > 0 && (
+        <div className="mb-4 space-y-1">
+          {people.map((p) => {
+            const color = personColor(p.id);
+            return (
+              <div
+                key={p.id}
+                className="flex items-center justify-between rounded bg-slate-800/40 px-2.5 py-1.5"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: p.moving ? color.main : color.still }}
+                  />
+                  <span className="font-mono text-[11px] text-slate-300">
+                    P{p.id + 1}
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-500">
+                  {p.moving
+                    ? `moving · ${p.velocity.toFixed(1)} m/s`
+                    : "stationary"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="space-y-2">
         <MetricBar

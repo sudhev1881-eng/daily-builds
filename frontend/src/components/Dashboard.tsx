@@ -31,8 +31,7 @@ export function Dashboard() {
   const [trails, setTrails] = useState<TrailPoint[]>([]);
   const [heatmap, setHeatmap] = useState<HeatmapCell[]>([]);
   const heatmapRef = useRef<Map<string, number>>(new Map());
-  const lastTrailPos = useRef<{ x: number; y: number } | null>(null);
-  const lastKnownPos = useRef({ x: 4, y: 3 });
+  const lastTrailPos = useRef<Map<number, { x: number; y: number }>>(new Map());
 
   const currentRoom = room || reading?.room || DEFAULT_ROOM;
   const roomStatus: RoomStatus = reading?.room_status ?? "BOOTING";
@@ -40,13 +39,8 @@ export function Dashboard() {
     roomStatus === "BOOTING" || roomStatus === "BASELINE ESTABLISHED";
   const personVisible = reading?.person_visible ?? false;
   const personMoving = roomStatus === "HUMAN MOVING";
-
-  if (personVisible && reading) {
-    lastKnownPos.current = { x: reading.x, y: reading.y };
-  }
-
-  const displayX = reading?.x ?? lastKnownPos.current.x;
-  const displayY = reading?.y ?? lastKnownPos.current.y;
+  const people = personVisible && !isCalibrating ? (reading?.people ?? []) : [];
+  const personCount = reading?.person_count ?? 0;
 
   useEffect(() => {
     if (!reading) return;
@@ -61,31 +55,36 @@ export function Dashboard() {
       reading.movement_probability >= HEATMAP_MIN_MOVEMENT;
 
     if (isHumanMoving && reading.person_visible) {
-      const last = lastTrailPos.current;
-      const dist = last
-        ? Math.hypot(reading.x - last.x, reading.y - last.y)
-        : TRAIL_MIN_DISTANCE_M;
+      const newPoints: TrailPoint[] = [];
+      for (const person of reading.people) {
+        if (!person.moving) continue;
+        const last = lastTrailPos.current.get(person.id);
+        const dist = last
+          ? Math.hypot(person.x - last.x, person.y - last.y)
+          : TRAIL_MIN_DISTANCE_M;
 
-      if (dist >= TRAIL_MIN_DISTANCE_M) {
-        lastTrailPos.current = { x: reading.x, y: reading.y };
-        setTrails((prev) => [
-          ...prev.slice(-150),
-          {
-            x: reading.x,
-            y: reading.y,
+        if (dist >= TRAIL_MIN_DISTANCE_M) {
+          lastTrailPos.current.set(person.id, { x: person.x, y: person.y });
+          newPoints.push({
+            x: person.x,
+            y: person.y,
             timestamp: Date.now(),
             intensity: reading.movement_intensity / 100,
-          },
-        ]);
+            personId: person.id,
+          });
 
-        const cellX = Math.round(reading.x * 2) / 2;
-        const cellY = Math.round(reading.y * 2) / 2;
-        const key = `${cellX},${cellY}`;
-        const current = heatmapRef.current.get(key) || 0;
-        heatmapRef.current.set(
-          key,
-          Math.min(1, current + reading.movement_intensity / 300)
-        );
+          const cellX = Math.round(person.x * 2) / 2;
+          const cellY = Math.round(person.y * 2) / 2;
+          const key = `${cellX},${cellY}`;
+          const current = heatmapRef.current.get(key) || 0;
+          heatmapRef.current.set(
+            key,
+            Math.min(1, current + reading.movement_intensity / 300)
+          );
+        }
+      }
+      if (newPoints.length > 0) {
+        setTrails((prev) => [...prev.slice(-150), ...newPoints]);
       }
     }
 
@@ -135,16 +134,12 @@ export function Dashboard() {
           <div className="relative min-h-[280px] flex-1">
             <RoomVisualization
               room={currentRoom}
-              personX={displayX}
-              personY={displayY}
-              personVisible={personVisible && !isCalibrating}
-              personMoving={personMoving}
-              direction={reading?.direction ?? null}
+              people={people}
               trails={trails}
               heatmap={heatmap}
-            movementDetected={personMoving}
-            accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
-          />
+              movementDetected={personMoving}
+              accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
+            />
             <CalibrationOverlay
               remaining={reading?.calibration_remaining_sec ?? null}
               roomStatus={roomStatus}
@@ -163,6 +158,8 @@ export function Dashboard() {
             roomStatus={roomStatus}
             presenceProbability={reading?.presence_probability ?? 0}
             movementProbability={reading?.movement_probability ?? 0}
+            personCount={personCount}
+            people={people}
             timestamp={reading?.timestamp ?? null}
             connected={connected}
             positionError={reading?.position_error_m ?? null}

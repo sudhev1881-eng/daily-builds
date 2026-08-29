@@ -76,14 +76,7 @@ async def _broadcast_loop() -> None:
                 simulator.set_calibrating(calibrating)
 
                 if not calibrating:
-                    pipeline.set_simulator_state(
-                        simulator.person_x,
-                        simulator.person_y,
-                        simulator.is_present,
-                        simulator.is_moving,
-                        simulator.current_velocity,
-                        simulator.current_direction,
-                    )
+                    pipeline.set_simulator_state(simulator.people_state())
 
                 reading = pipeline.process(raw, simulation_mode=_use_simulator)
             else:

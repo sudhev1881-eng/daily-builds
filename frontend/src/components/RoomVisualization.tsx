@@ -1,13 +1,15 @@
 import { useEffect, useRef } from "react";
-import type { HeatmapCell, RoomConfig, TrailPoint } from "../types/sensor";
+import type {
+  HeatmapCell,
+  RoomConfig,
+  TrackedPerson,
+  TrailPoint,
+} from "../types/sensor";
+import { personColor } from "../types/sensor";
 
 interface RoomVisualizationProps {
   room: RoomConfig;
-  personX: number;
-  personY: number;
-  personVisible: boolean;
-  personMoving: boolean;
-  direction: number | null;
+  people: TrackedPerson[];
   trails: TrailPoint[];
   heatmap: HeatmapCell[];
   movementDetected: boolean;
@@ -16,7 +18,6 @@ interface RoomVisualizationProps {
 
 const PADDING = 48;
 const GRID_SIZE = 1.0;
-const POSITION_DEADBAND = 0.15;
 const LERP_FACTOR = 0.12;
 const MIN_CANVAS_SIZE = 10;
 
@@ -30,11 +31,7 @@ interface Layout {
 
 export function RoomVisualization({
   room,
-  personX,
-  personY,
-  personVisible,
-  personMoving,
-  direction,
+  people,
   trails,
   heatmap,
   movementDetected,
@@ -44,51 +41,15 @@ export function RoomVisualization({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const roomRef = useRef(room);
-  const propsRef = useRef({
-    personX,
-    personY,
-    personVisible,
-    personMoving,
-    direction,
-    trails,
-    heatmap,
-    movementDetected,
-    accuracyRadius,
-  });
+  const propsRef = useRef({ people, trails, heatmap, movementDetected, accuracyRadius });
   const layoutRef = useRef<Layout | null>(null);
-  const smoothPos = useRef({ x: personX, y: personY });
-  const targetPos = useRef({ x: personX, y: personY });
-  const wasVisibleRef = useRef(false);
+  const smoothRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pulsePhase = useRef(0);
   const animRef = useRef(0);
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
 
   roomRef.current = room;
-  propsRef.current = {
-    personX,
-    personY,
-    personVisible,
-    personMoving,
-    direction,
-    trails,
-    heatmap,
-    movementDetected,
-    accuracyRadius,
-  };
-
-  if (personVisible) {
-    const dx = personX - targetPos.current.x;
-    const dy = personY - targetPos.current.y;
-    if (!wasVisibleRef.current || Math.hypot(dx, dy) >= POSITION_DEADBAND || personMoving) {
-      targetPos.current = { x: personX, y: personY };
-    }
-    if (!wasVisibleRef.current) {
-      smoothPos.current = { x: personX, y: personY };
-    }
-    wasVisibleRef.current = true;
-  } else {
-    wasVisibleRef.current = false;
-  }
+  propsRef.current = { people, trails, heatmap, movementDetected, accuracyRadius };
 
   function computeLayout(w: number, h: number, r: RoomConfig): Layout {
     const availW = w - PADDING * 2;
@@ -203,15 +164,23 @@ export function RoomVisualization({
     ctx.lineWidth = 2;
     ctx.strokeRect(offsetX, offsetY, roomPxW, roomPxH);
 
-    // Trails
+    // Trails — one polyline per person, in that person's color
     const now = Date.now();
-    const recentTrails = p.trails.filter((t) => now - t.timestamp < 8000);
-    if (recentTrails.length > 1) {
+    const byPerson = new Map<number, TrailPoint[]>();
+    for (const t of p.trails) {
+      if (now - t.timestamp >= 8000) continue;
+      const list = byPerson.get(t.personId) ?? [];
+      list.push(t);
+      byPerson.set(t.personId, list);
+    }
+    for (const [pid, points] of byPerson) {
+      if (points.length < 2) continue;
+      const color = personColor(pid);
       ctx.beginPath();
-      ctx.strokeStyle = "rgba(56,189,248,0.25)";
+      ctx.strokeStyle = `rgba(${color.glow},0.25)`;
       ctx.lineWidth = 1.5;
-      for (let i = 0; i < recentTrails.length; i++) {
-        const pos = worldToScreen(recentTrails[i].x, recentTrails[i].y, layout, r.height);
+      for (let i = 0; i < points.length; i++) {
+        const pos = worldToScreen(points[i].x, points[i].y, layout, r.height);
         if (i === 0) ctx.moveTo(pos.x, pos.y);
         else ctx.lineTo(pos.x, pos.y);
       }
@@ -251,35 +220,44 @@ export function RoomVisualization({
     drawSensor(r.router.x, r.router.y, "ROUTER", "#0ea5e9", "📡");
     drawSensor(r.receiver.x, r.receiver.y, "RECEIVER", "#8b5cf6", "📶");
 
-    // Person — snap on appear, smooth only while tracking
-    if (p.personVisible) {
-      if (p.personMoving) {
-        smoothPos.current.x += (targetPos.current.x - smoothPos.current.x) * LERP_FACTOR;
-        smoothPos.current.y += (targetPos.current.y - smoothPos.current.y) * LERP_FACTOR;
-      } else {
-        smoothPos.current.x = targetPos.current.x;
-        smoothPos.current.y = targetPos.current.y;
-      }
-      const pos = worldToScreen(smoothPos.current.x, smoothPos.current.y, layout, r.height);
+    // People — snap on appear, smooth only while moving
+    const activeIds = new Set<number>();
+    for (const person of p.people) {
+      activeIds.add(person.id);
+      const color = personColor(person.id);
 
-      if (p.personMoving) {
+      let smooth = smoothRef.current.get(person.id);
+      if (!smooth) {
+        smooth = { x: person.x, y: person.y };
+        smoothRef.current.set(person.id, smooth);
+      } else if (person.moving) {
+        smooth.x += (person.x - smooth.x) * LERP_FACTOR;
+        smooth.y += (person.y - smooth.y) * LERP_FACTOR;
+      } else {
+        smooth.x = person.x;
+        smooth.y = person.y;
+      }
+
+      const pos = worldToScreen(smooth.x, smooth.y, layout, r.height);
+
+      if (person.moving) {
         const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 20);
-        glow.addColorStop(0, "rgba(52,211,153,0.25)");
-        glow.addColorStop(1, "rgba(52,211,153,0)");
+        glow.addColorStop(0, `rgba(${color.glow},0.25)`);
+        glow.addColorStop(1, `rgba(${color.glow},0)`);
         ctx.fillStyle = glow;
         ctx.fillRect(pos.x - 25, pos.y - 25, 50, 50);
       }
 
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
-      ctx.fillStyle = p.personMoving ? "#34d399" : "#6ee7b7";
+      ctx.fillStyle = person.moving ? color.main : color.still;
       ctx.fill();
 
       // Accuracy uncertainty circle
       const radiusPx = p.accuracyRadius * layout.scale;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, radiusPx, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(52,211,153,0.25)";
+      ctx.strokeStyle = `rgba(${color.glow},0.25)`;
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.stroke();
@@ -288,16 +266,27 @@ export function RoomVisualization({
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      if (p.direction !== null && p.personMoving) {
-        const ax = pos.x + Math.cos(p.direction) * 18;
-        const ay = pos.y - Math.sin(p.direction) * 18;
+      // Person label (P1, P2, ...)
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "9px JetBrains Mono";
+      ctx.textAlign = "center";
+      ctx.fillText(`P${person.id + 1}`, pos.x, pos.y - 14);
+
+      if (person.direction !== null && person.moving) {
+        const ax = pos.x + Math.cos(person.direction) * 18;
+        const ay = pos.y - Math.sin(person.direction) * 18;
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
         ctx.lineTo(ax, ay);
-        ctx.strokeStyle = "rgba(52,211,153,0.7)";
+        ctx.strokeStyle = `rgba(${color.glow},0.7)`;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
+    }
+
+    // Drop smoothing state for people no longer tracked
+    for (const id of smoothRef.current.keys()) {
+      if (!activeIds.has(id)) smoothRef.current.delete(id);
     }
 
     // Labels

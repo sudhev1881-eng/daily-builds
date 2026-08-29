@@ -1,6 +1,6 @@
 """
 Processing pipeline: converts raw RSSI/CSI measurements into presence,
-movement, and position estimates.
+movement, person count, and position estimates.
 
 Detection design (research-based, see csi_features.py):
 
@@ -10,11 +10,18 @@ Detection design (research-based, see csi_features.py):
    can never trip detection, regardless of environment.
 2. Motion uses the cross-subcarrier "turbulence" metric: human movement
    decorrelates subcarriers, fans/noise do not.
-3. Presence uses the static baseline deviation (a body shifts the amplitude
-   profile) and is held alive by breathing-band detection for stationary
-   humans.
+3. Presence uses the static baseline deviation (bodies shift the amplitude
+   profile; multiple bodies superimpose) and is held alive by breathing-band
+   detection for stationary humans.
 4. Movement output is hard-gated: zero unless motion is confirmed active.
-5. Position freezes while the person is stationary — no Kalman drift.
+5. Per-person tracks: each person has an independent position track that
+   freezes while that person is stationary — no Kalman drift.
+
+Multi-person: detection (presence/motion) is signal-based. Individual
+positions come from simulator ground-truth hints fused with RSSI estimates
+(85/15) — separating individual bodies from a single RSSI/CSI link requires
+antenna arrays or ML models, so with real single-link hardware the pipeline
+falls back to one aggregate track.
 """
 
 from __future__ import annotations
@@ -25,7 +32,14 @@ import time
 import numpy as np
 
 from app.config import detection_thresholds as dt
-from app.models import DetectionStatus, ProcessedReading, RawMeasurement, RoomConfig, RoomStatus
+from app.models import (
+    DetectionStatus,
+    ProcessedReading,
+    RawMeasurement,
+    RoomConfig,
+    RoomStatus,
+    TrackedPerson,
+)
 from app.processing.baseline import BaselineCalibrator
 from app.processing.csi_features import (
     AdaptiveThreshold,
@@ -36,6 +50,15 @@ from app.processing.csi_features import (
 from app.processing.filters import HysteresisState, PeriodicDetector, position_deadband
 from app.processing.kalman import KalmanFilter2D
 from app.processing.positioning import estimate_position
+
+
+class _Track:
+    """Position track for one person."""
+
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+        self.kalman = KalmanFilter2D(x, y)
 
 
 class ProcessingPipeline:
@@ -81,43 +104,23 @@ class ProcessingPipeline:
         )
         self._periodic = PeriodicDetector(window=80, min_period=3, max_period=30)
 
-        self._est_x = self.room.width / 2
-        self._est_y = self.room.height / 2
-        self._display_x = self._est_x
-        self._display_y = self._est_y
+        self._display_x = self.room.width / 2
+        self._display_y = self.room.height / 2
         self._velocity = 0.0
         self._direction: float | None = None
 
         self._room_status = RoomStatus.BOOTING
 
-        # Ground truth hints from simulator (position only, NOT detection)
-        self._sim_x: float | None = None
-        self._sim_y: float | None = None
-        self._sim_present = False
-        self._sim_moving = False
-        self._sim_velocity = 0.0
-        self._sim_direction = 0.0
+        # Ground truth hints from simulator (positions only, NOT detection)
+        self._sim_people: list[dict] = []
 
+        self._tracks: dict[int, _Track] = {}
         self._was_person_visible = False
-        self._kalman = KalmanFilter2D(self._est_x, self._est_y)
         self._deadband = dt.position_deadband_m
 
-    def set_simulator_state(
-        self,
-        x: float,
-        y: float,
-        present: bool,
-        moving: bool,
-        velocity: float,
-        direction: float,
-    ) -> None:
+    def set_simulator_state(self, people: list[dict]) -> None:
         """Position hints only — detection is signal-based, not injected."""
-        self._sim_x = x
-        self._sim_y = y
-        self._sim_present = present
-        self._sim_moving = moving
-        self._sim_velocity = velocity
-        self._sim_direction = direction
+        self._sim_people = people
 
     def update_room(self, room: RoomConfig) -> None:
         self.room = room
@@ -165,56 +168,93 @@ class ProcessingPipeline:
         self._thresholds_learned = True
 
     # ------------------------------------------------------------------
-    # Position
+    # Per-person tracking
     # ------------------------------------------------------------------
 
-    def _update_position(self, rssi: float) -> None:
-        """Only called while movement is active — stationary position is frozen."""
-        raw_x, raw_y = estimate_position(
+    def _estimate_for_hint(self, rssi: float, track: _Track | None, hint: dict) -> tuple[float, float]:
+        return estimate_position(
             rssi,
             self.room,
-            self._display_x,
-            self._display_y,
-            sim_x=self._sim_x,
-            sim_y=self._sim_y,
-            sim_present=self._sim_present,
+            track.x if track else hint["x"],
+            track.y if track else hint["y"],
+            sim_x=hint["x"],
+            sim_y=hint["y"],
+            sim_present=True,
         )
 
-        self._kalman.predict()
-        self._kalman.update(raw_x, raw_y)
-        kx, ky = self._kalman.position
+    def _update_tracks(self, rssi: float, movement_active: bool) -> list[TrackedPerson]:
+        """Maintain one position track per person hint.
 
-        alpha = 0.55
-        self._est_x = alpha * kx + (1 - alpha) * self._est_x
-        self._est_y = alpha * ky + (1 - alpha) * self._est_y
+        Moving people get Kalman-smoothed updates; stationary people are
+        FROZEN in place (no drift). With no hints (real hardware), a single
+        aggregate track is estimated from RSSI.
+        """
+        hints = self._sim_people
+        if not hints:
+            # Hardware fallback: one aggregate person from RSSI bilateration
+            raw_x, raw_y = estimate_position(
+                rssi, self.room, self._display_x, self._display_y,
+            )
+            track = self._tracks.get(-1)
+            if track is None:
+                track = _Track(raw_x, raw_y)
+                self._tracks = {-1: track}
+            elif movement_active:
+                track.kalman.predict()
+                track.kalman.update(raw_x, raw_y)
+                kx, ky = track.kalman.position
+                track.x, track.y = position_deadband(kx, ky, track.x, track.y, self._deadband)
+            return [
+                TrackedPerson(
+                    id=0, x=round(track.x, 2), y=round(track.y, 2),
+                    moving=movement_active,
+                    velocity=round(track.kalman.velocity, 2) if movement_active else 0.0,
+                    direction=track.kalman.direction if movement_active else None,
+                )
+            ]
 
-        x, y = position_deadband(self._est_x, self._est_y, self._display_x, self._display_y, self._deadband)
-        self._display_x, self._display_y = x, y
+        active_ids = set()
+        people: list[TrackedPerson] = []
+        for hint in hints:
+            pid = hint["id"]
+            active_ids.add(pid)
+            track = self._tracks.get(pid)
 
-    def _snap_position(self, rssi: float) -> None:
-        """First appearance: snap directly to estimate, no lerp from center."""
-        raw_x, raw_y = estimate_position(
-            rssi,
-            self.room,
-            self._display_x,
-            self._display_y,
-            sim_x=self._sim_x,
-            sim_y=self._sim_y,
-            sim_present=self._sim_present,
-        )
-        self._est_x, self._est_y = raw_x, raw_y
-        self._display_x, self._display_y = raw_x, raw_y
-        self._kalman.reset(raw_x, raw_y)
+            if track is None:
+                # New person: snap directly to estimate, no lerp from center
+                x, y = self._estimate_for_hint(rssi, None, hint)
+                track = _Track(x, y)
+                self._tracks[pid] = track
+            elif hint["moving"] and movement_active:
+                raw_x, raw_y = self._estimate_for_hint(rssi, track, hint)
+                track.kalman.predict()
+                track.kalman.update(raw_x, raw_y)
+                kx, ky = track.kalman.position
+                nx = 0.55 * kx + 0.45 * track.x
+                ny = 0.55 * ky + 0.45 * track.y
+                track.x, track.y = position_deadband(nx, ny, track.x, track.y, self._deadband)
+            # else: stationary person — position frozen
+
+            person_moving = bool(hint["moving"]) and movement_active
+            people.append(
+                TrackedPerson(
+                    id=pid,
+                    x=round(track.x, 2),
+                    y=round(track.y, 2),
+                    moving=person_moving,
+                    velocity=round(hint["velocity"], 2) if person_moving else 0.0,
+                    direction=hint["direction"] if person_moving else None,
+                )
+            )
+
+        self._tracks = {pid: tr for pid, tr in self._tracks.items() if pid in active_ids}
+        return people
 
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
 
-    def _resolve_room_status(
-        self,
-        presence_active: bool,
-        movement_active: bool,
-    ) -> RoomStatus:
+    def _resolve_room_status(self, presence_active: bool, movement_active: bool) -> RoomStatus:
         if movement_active and not presence_active and self._periodic.learned:
             return RoomStatus.ENVIRONMENTAL_ACTIVITY
         if not presence_active:
@@ -242,6 +282,7 @@ class ProcessingPipeline:
         status: DetectionStatus = DetectionStatus.NO_PERSON,
         room_status: RoomStatus,
         person_visible: bool = False,
+        people: list[TrackedPerson] | None = None,
         calibration_remaining_sec: float | None = None,
         position_error_m: float | None = None,
         accuracy_radius_m: float = 0.5,
@@ -249,6 +290,7 @@ class ProcessingPipeline:
     ) -> ProcessedReading:
         amplitudes = measurement.csi_amplitude or []
         waveform = amplitudes[:32] if amplitudes else [measurement.rssi / -100.0] * 32
+        people = people or []
         return ProcessedReading(
             timestamp=measurement.timestamp,
             rssi=measurement.rssi,
@@ -262,6 +304,8 @@ class ProcessingPipeline:
             status=status,
             room_status=room_status,
             person_visible=person_visible,
+            people=people,
+            person_count=len(people),
             calibration_remaining_sec=calibration_remaining_sec,
             position_error_m=round(position_error_m, 3) if position_error_m is not None else None,
             accuracy_radius_m=accuracy_radius_m,
@@ -350,23 +394,29 @@ class ProcessingPipeline:
         )
 
         pos_error: float | None = None
+        people: list[TrackedPerson] = []
         if person_visible:
-            if not self._was_person_visible:
-                self._snap_position(rssi)
-            elif movement_active:
-                self._update_position(rssi)
-            # Stationary: position frozen — no Kalman drift, no jitter
-
+            people = self._update_tracks(rssi, movement_active)
             self._was_person_visible = True
 
-            if self._sim_present and self._sim_x is not None and self._sim_y is not None:
-                pos_error = math.hypot(self._display_x - self._sim_x, self._display_y - self._sim_y)
+            if people:
+                self._display_x, self._display_y = people[0].x, people[0].y
 
-            if movement_active:
-                self._velocity = self._sim_velocity if self._sim_moving else self._kalman.velocity
-                self._direction = (
-                    self._sim_direction if self._sim_moving and self._sim_direction else self._kalman.direction
-                )
+            # Position error vs ground truth, averaged over people (sim only)
+            if self._sim_people:
+                errors = []
+                by_id = {h["id"]: h for h in self._sim_people}
+                for p in people:
+                    hint = by_id.get(p.id)
+                    if hint:
+                        errors.append(math.hypot(p.x - hint["x"], p.y - hint["y"]))
+                if errors:
+                    pos_error = sum(errors) / len(errors)
+
+            moving_people = [p for p in people if p.moving]
+            if movement_active and moving_people:
+                self._velocity = max(p.velocity for p in moving_people)
+                self._direction = moving_people[0].direction
             else:
                 self._velocity = 0.0
                 self._direction = None
@@ -374,6 +424,7 @@ class ProcessingPipeline:
             self._velocity = 0.0
             self._direction = None
             self._was_person_visible = False
+            self._tracks.clear()
             self._breathing.reset()
 
         # --- Output probabilities: hard-gated, no stale EMA display ---
@@ -401,6 +452,7 @@ class ProcessingPipeline:
             status=self._to_legacy_status(presence_active, movement_active),
             room_status=self._room_status,
             person_visible=person_visible,
+            people=people,
             position_error_m=pos_error,
             accuracy_radius_m=accuracy_radius,
             simulation_mode=simulation_mode,

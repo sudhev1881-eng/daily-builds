@@ -47,6 +47,17 @@ class RawMeasurement(BaseModel):
     source: str = "simulator"
 
 
+class TrackedPerson(BaseModel):
+    """A single tracked person in the room."""
+
+    id: int
+    x: float
+    y: float
+    moving: bool = False
+    velocity: float = 0.0
+    direction: Optional[float] = None
+
+
 class ProcessedReading(BaseModel):
     """Processed sensing output sent to the dashboard."""
 
@@ -62,6 +73,8 @@ class ProcessedReading(BaseModel):
     status: DetectionStatus
     room_status: RoomStatus
     person_visible: bool = False
+    people: list[TrackedPerson] = Field(default_factory=list)
+    person_count: int = 0
     calibration_remaining_sec: Optional[float] = None
     position_error_m: Optional[float] = None
     accuracy_radius_m: float = 0.5

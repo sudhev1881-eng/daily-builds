@@ -55,7 +55,10 @@ class HysteresisState:
                     self.active = False
                     self._below_count = 0
             else:
-                self._below_count = 0
+                # Leaky release: an occasional noise frame above the stop
+                # threshold subtracts progress instead of erasing it, so
+                # release time stays bounded under sporadic noise.
+                self._below_count = max(0, self._below_count - 2)
         else:
             if score > self.start_threshold:
                 self._above_count += 1

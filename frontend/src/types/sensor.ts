@@ -25,6 +25,15 @@ export interface RoomConfig {
   receiver: SensorPosition;
 }
 
+export interface TrackedPerson {
+  id: number;
+  x: number;
+  y: number;
+  moving: boolean;
+  velocity: number;
+  direction: number | null;
+}
+
 export interface ProcessedReading {
   timestamp: string;
   rssi: number;
@@ -38,6 +47,8 @@ export interface ProcessedReading {
   status: DetectionStatus;
   room_status: RoomStatus;
   person_visible: boolean;
+  people: TrackedPerson[];
+  person_count: number;
   calibration_remaining_sec: number | null;
   position_error_m: number | null;
   accuracy_radius_m: number;
@@ -51,6 +62,18 @@ export interface TrailPoint {
   y: number;
   timestamp: number;
   intensity: number;
+  personId: number;
+}
+
+// Distinct marker colors per tracked person id
+export const PERSON_COLORS = [
+  { main: "#34d399", still: "#6ee7b7", glow: "52,211,153" },
+  { main: "#38bdf8", still: "#7dd3fc", glow: "56,189,248" },
+  { main: "#fbbf24", still: "#fcd34d", glow: "251,191,36" },
+] as const;
+
+export function personColor(id: number) {
+  return PERSON_COLORS[id % PERSON_COLORS.length];
 }
 
 export interface HeatmapCell {
