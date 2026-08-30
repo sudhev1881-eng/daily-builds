@@ -1,0 +1,10 @@
+node_modules
+frontend/dist
+backend/venv
+.git
+.run
+.bin
+PUBLIC_URL.txt
+backend/static
+**/__pycache__
+*.pyc
