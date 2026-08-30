@@ -32,6 +32,7 @@ export interface TrackedPerson {
   moving: boolean;
   velocity: number;
   direction: number | null;
+  is_user: boolean;
 }
 
 export interface ProcessedReading {
@@ -50,6 +51,7 @@ export interface ProcessedReading {
   people: TrackedPerson[];
   person_count: number;
   calibration_remaining_sec: number | null;
+  calibration_quality: number | null;
   position_error_m: number | null;
   accuracy_radius_m: number;
   csi_waveform: number[];
@@ -63,6 +65,7 @@ export interface TrailPoint {
   timestamp: number;
   intensity: number;
   personId: number;
+  isUser: boolean;
 }
 
 // Distinct marker colors per tracked person id
@@ -72,8 +75,16 @@ export const PERSON_COLORS = [
   { main: "#fbbf24", still: "#fcd34d", glow: "251,191,36" },
 ] as const;
 
-export function personColor(id: number) {
+// The user-controlled person is always rose
+export const USER_COLOR = { main: "#f472b6", still: "#f9a8d4", glow: "244,114,182" } as const;
+
+export function personColor(id: number, isUser = false) {
+  if (isUser) return USER_COLOR;
   return PERSON_COLORS[id % PERSON_COLORS.length];
+}
+
+export function personLabel(p: TrackedPerson): string {
+  return p.is_user ? "YOU" : `P${p.id + 1}`;
 }
 
 export interface HeatmapCell {

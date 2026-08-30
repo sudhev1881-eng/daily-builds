@@ -56,6 +56,7 @@ class TrackedPerson(BaseModel):
     moving: bool = False
     velocity: float = 0.0
     direction: Optional[float] = None
+    is_user: bool = False
 
 
 class ProcessedReading(BaseModel):
@@ -76,6 +77,7 @@ class ProcessedReading(BaseModel):
     people: list[TrackedPerson] = Field(default_factory=list)
     person_count: int = 0
     calibration_remaining_sec: Optional[float] = None
+    calibration_quality: Optional[float] = None
     position_error_m: Optional[float] = None
     accuracy_radius_m: float = 0.5
     csi_waveform: list[float] = Field(default_factory=list)

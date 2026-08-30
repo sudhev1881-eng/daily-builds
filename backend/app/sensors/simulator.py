@@ -38,11 +38,25 @@ CSI_SUBCARRIERS = 64
 
 
 class SimPerson:
-    """One simulated person with an independent behavior state machine."""
+    """One simulated person with an independent behavior state machine.
 
-    def __init__(self, room: RoomConfig, person_id: int, wavelengths: np.ndarray) -> None:
+    With manual=True the automatic scenario machine is disabled: the person
+    enters/leaves and walks to targets only on external command (used for the
+    user-controlled "YOU" person).
+    """
+
+    def __init__(
+        self,
+        room: RoomConfig,
+        person_id: int,
+        wavelengths: np.ndarray,
+        manual: bool = False,
+    ) -> None:
         self.room = room
         self.id = person_id
+        self.manual = manual
+        self.is_user = manual
+        self._leaving_room = False
         self.x = room.width / 2
         self.y = room.height / 2
         self.present = False
@@ -73,6 +87,18 @@ class SimPerson:
         self.gait_amplitude_m = random.uniform(0.04, 0.06)
 
     def update(self, dt: float) -> None:
+        if self.manual:
+            if not self.present:
+                return
+            self._move_toward_target(dt)
+            if self._at_target():
+                self.moving = False
+                self.velocity = 0.0
+                if self._leaving_room:
+                    self._leaving_room = False
+                    self.present = False
+            return
+
         self.timer += dt
 
         if self.scenario == "away":
@@ -180,7 +206,8 @@ class WiFiSimulator(BaseSensor):
 
     CSI_SUBCARRIERS = CSI_SUBCARRIERS
     FAN_FREQ_HZ = 2.5
-    MAX_PEOPLE = 3
+    MAX_PEOPLE = 2  # automatic people; the user-controlled person is extra
+    USER_ID = 7
 
     def __init__(self, room: RoomConfig | None = None) -> None:
         self.room = room or RoomConfig()
@@ -196,6 +223,7 @@ class WiFiSimulator(BaseSensor):
         self._fan_profile = np.cos(0.35 * k + rng.uniform(0, 2 * math.pi))
 
         self.persons = [SimPerson(self.room, i, self._wavelengths) for i in range(self.MAX_PEOPLE)]
+        self.user = SimPerson(self.room, self.USER_ID, self._wavelengths, manual=True)
 
         # Environmental: fan always running (calibrated into baseline)
         self.fan_running = True
@@ -213,10 +241,44 @@ class WiFiSimulator(BaseSensor):
 
     def update_room(self, room: RoomConfig) -> None:
         self.room = room
-        for p in self.persons:
+        for p in [*self.persons, self.user]:
             p.room = room
             p.x = min(p.x, room.width - 0.5)
             p.y = min(p.y, room.height - 0.5)
+
+    # ------------------------------------------------------------------
+    # User-controlled person ("YOU")
+    # ------------------------------------------------------------------
+
+    def user_enter(self) -> None:
+        """User walks in through the door (bottom-left corner)."""
+        u = self.user
+        u.present = True
+        u._leaving_room = False
+        u.x, u.y = 0.4, 0.4
+        u.target_x = min(2.0, self.room.width - 1.0)
+        u.target_y = min(2.0, self.room.height - 1.0)
+        u.walk_speed = 1.0
+        u.moving = True
+
+    def user_move_to(self, x: float, y: float) -> None:
+        u = self.user
+        if not u.present:
+            return
+        u._leaving_room = False
+        u.target_x = max(0.3, min(self.room.width - 0.3, x))
+        u.target_y = max(0.3, min(self.room.height - 0.3, y))
+        u.walk_speed = 1.0
+        u.moving = True
+
+    def user_leave(self) -> None:
+        u = self.user
+        if not u.present:
+            return
+        u._leaving_room = True
+        u.target_x, u.target_y = 0.4, 0.4
+        u.walk_speed = 1.1
+        u.moving = True
 
     # ------------------------------------------------------------------
     # State access
@@ -224,7 +286,7 @@ class WiFiSimulator(BaseSensor):
 
     @property
     def present_persons(self) -> list[SimPerson]:
-        return [p for p in self.persons if p.present]
+        return [p for p in [*self.persons, self.user] if p.present]
 
     def people_state(self) -> list[dict]:
         """Ground-truth hints for the pipeline (position only, NOT detection)."""
@@ -236,6 +298,7 @@ class WiFiSimulator(BaseSensor):
                 "moving": p.moving,
                 "velocity": p.velocity,
                 "direction": p.direction,
+                "is_user": p.is_user,
             }
             for p in self.present_persons
         ]
@@ -283,12 +346,12 @@ class WiFiSimulator(BaseSensor):
 
     def _update_scenarios(self, dt: float) -> None:
         if self._calibrating:
-            for p in self.persons:
+            for p in [*self.persons, self.user]:
                 p.present = False
                 p.moving = False
                 p.velocity = 0.0
             return
-        for p in self.persons:
+        for p in [*self.persons, self.user]:
             p.update(dt)
 
     def _fan_reflection(self, t: float) -> np.ndarray:

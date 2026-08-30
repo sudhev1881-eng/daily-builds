@@ -120,6 +120,8 @@ class ProcessingPipeline:
         self._tracks: dict[int, _Track] = {}
         self._was_person_visible = False
         self._deadband = dt.position_deadband_m
+        self._calibration_attempts = 0
+        self._calibration_quality: float | None = None
 
     def set_simulator_state(self, people: list[dict]) -> None:
         """Position hints only — detection is signal-based, not injected."""
@@ -127,6 +129,33 @@ class ProcessingPipeline:
 
     def update_room(self, room: RoomConfig) -> None:
         self.room = room
+
+    def recalibrate(self) -> None:
+        """Discard the baseline and start a fresh calibration window."""
+        self._calibrator = BaselineCalibrator(dt.calibration_duration_sec)
+        self._calibrator_started = False
+        self._baseline_announced = False
+        self._thresholds_learned = False
+        self._calibration_attempts = 0
+        self._calibration_quality = None
+        self._motion_threshold = AdaptiveThreshold(
+            headroom=dt.motion_headroom,
+            percentile=dt.motion_percentile,
+            floor=dt.motion_floor,
+        )
+        self._presence_threshold = AdaptiveThreshold(
+            headroom=dt.presence_headroom,
+            percentile=dt.presence_percentile,
+            floor=dt.presence_floor,
+        )
+        self._motion_scorer.reset()
+        self._presence_hyst.reset()
+        self._motion_hyst.reset()
+        self._breathing.reset()
+        self._periodic.reset()
+        self._tracks.clear()
+        self._sim_people = []
+        self._was_person_visible = False
 
     @property
     def is_calibrating(self) -> bool:
@@ -260,6 +289,7 @@ class ProcessingPipeline:
                     moving=person_moving,
                     velocity=round(hint["velocity"], 2) if person_moving else 0.0,
                     direction=hint["direction"] if person_moving else None,
+                    is_user=bool(hint.get("is_user", False)),
                 )
             )
 
@@ -323,6 +353,11 @@ class ProcessingPipeline:
             people=people,
             person_count=len(people),
             calibration_remaining_sec=calibration_remaining_sec,
+            calibration_quality=(
+                round(self._calibration_quality, 2)
+                if self._calibration_quality is not None
+                else None
+            ),
             position_error_m=round(position_error_m, 3) if position_error_m is not None else None,
             accuracy_radius_m=accuracy_radius_m,
             csi_waveform=[round(v, 4) for v in waveform],
@@ -359,6 +394,21 @@ class ProcessingPipeline:
             )
 
         if not self._calibrator.baseline.established:
+            # Window elapsed — validate the baseline was captured in a quiet
+            # room before accepting it. Movement during calibration corrupts
+            # the baseline, so restart the window (bounded retries).
+            ok, quality = self._calibrator.validate_stationarity()
+            enough = self._calibrator.sample_count >= dt.calibration_min_samples
+            if (not ok or not enough) and self._calibration_attempts < dt.calibration_max_retries:
+                self._calibration_attempts += 1
+                self._calibrator.start(t)
+                return self._make_reading(
+                    measurement,
+                    room_status=RoomStatus.BOOTING,
+                    calibration_remaining_sec=round(self._calibrator.remaining(t), 1),
+                    simulation_mode=simulation_mode,
+                )
+            self._calibration_quality = quality
             self._calibrator.finalize()
 
         if not self._thresholds_learned:

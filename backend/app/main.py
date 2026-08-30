@@ -134,6 +134,37 @@ async def ingest_measurement(measurement: RawMeasurement) -> ProcessedReading:
     return reading
 
 
+@app.post("/api/calibrate")
+async def recalibrate():
+    """Discard the baseline and re-run the quiet-room calibration window.
+    Everyone (including the user person) leaves the room during calibration."""
+    pipeline.recalibrate()
+    return {"calibrating": True}
+
+
+@app.post("/api/user/enter")
+async def user_enter():
+    """User-controlled person walks into the room."""
+    if pipeline.is_calibrating:
+        return {"present": False, "error": "calibrating"}
+    simulator.user_enter()
+    return {"present": True}
+
+
+@app.post("/api/user/move")
+async def user_move(target: dict):
+    """Walk the user-controlled person to a target point {x, y} (meters)."""
+    simulator.user_move_to(float(target.get("x", 0)), float(target.get("y", 0)))
+    return {"target": {"x": simulator.user.target_x, "y": simulator.user.target_y}}
+
+
+@app.post("/api/user/leave")
+async def user_leave():
+    """User-controlled person walks out of the room."""
+    simulator.user_leave()
+    return {"present": False}
+
+
 @app.post("/api/mode/simulation")
 async def enable_simulation():
     global _use_simulator

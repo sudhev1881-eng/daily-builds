@@ -94,23 +94,67 @@ class BaselineCalibrator:
         """Stored quiet-period samples, for adaptive threshold learning."""
         return self._rssi_samples, self._csi_amp_samples
 
+    @property
+    def sample_count(self) -> int:
+        return len(self._rssi_samples)
+
+    def validate_stationarity(self) -> tuple[bool, float]:
+        """Check the calibration window was actually quiet.
+
+        Splits the window in half and compares the mean CSI amplitude profile
+        and RSSI level between halves. A person entering / moving during
+        calibration shifts the second half away from the first, corrupting
+        the baseline. Returns (ok, quality in 0..1).
+        """
+        if len(self._csi_amp_samples) < 20:
+            return False, 0.0
+
+        stacked = np.stack(self._csi_amp_samples)
+        half = len(stacked) // 2
+        first, second = stacked[:half], stacked[half:]
+
+        per_sub_std = np.maximum(np.std(stacked, axis=0), 0.01)
+        profile_shift = float(
+            np.mean(np.abs(np.mean(second, axis=0) - np.mean(first, axis=0)) / per_sub_std)
+        )
+
+        rssi = np.array(self._rssi_samples, dtype=float)
+        rssi_std = max(float(np.std(rssi)), 0.3)
+        rssi_shift = abs(float(np.mean(rssi[len(rssi) // 2:]) - np.mean(rssi[: len(rssi) // 2]))) / rssi_std
+
+        # Quiet room: halves agree within a fraction of the noise std.
+        # A person entering shifts the profile by multiples of it.
+        score = profile_shift + 0.5 * rssi_shift
+        quality = float(max(0.0, min(1.0, 1.0 - score / 1.5)))
+        return score < 0.75, quality
+
     def finalize(self) -> SignalBaseline:
         n = len(self._rssi_samples)
         if n == 0:
             self.baseline.established = True
             return self.baseline
 
+        # Robust statistics: median / MAD resist transient outliers
+        # (door slam, RF burst) that would inflate a mean/std baseline.
         rssi_arr = np.array(self._rssi_samples)
-        self.baseline.rssi_mean = float(np.mean(rssi_arr))
-        self.baseline.rssi_std = float(max(np.std(rssi_arr), 0.3))
+        rssi_median = float(np.median(rssi_arr))
+        rssi_mad_std = float(1.4826 * np.median(np.abs(rssi_arr - rssi_median)))
+        self.baseline.rssi_mean = rssi_median
+        self.baseline.rssi_std = float(max(rssi_mad_std, np.std(rssi_arr) * 0.5, 0.3))
         self.baseline.signal_variance = float(np.var(rssi_arr))
         self.baseline.noise_level = float(np.std(rssi_arr))
         self.baseline.sample_count = n
 
         if self._csi_amp_samples:
             stacked = np.stack(self._csi_amp_samples)
-            self.baseline.csi_amp_mean = np.mean(stacked, axis=0)
-            self.baseline.csi_amp_std = np.maximum(np.std(stacked, axis=0), 0.01)
+            median = np.median(stacked, axis=0)
+            mad_std = 1.4826 * np.median(np.abs(stacked - median), axis=0)
+            self.baseline.csi_amp_mean = median
+            # Use the larger of MAD-std and classic std so periodic
+            # environmental swings (fans) stay fully inside the baseline.
+            self.baseline.csi_amp_std = np.maximum(
+                np.maximum(mad_std, np.std(stacked, axis=0)), 0.01
+            )
 
         if self._csi_phase_samples:
             stacked = np.stack(self._csi_phase_samples)

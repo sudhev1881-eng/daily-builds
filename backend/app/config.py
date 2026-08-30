@@ -12,6 +12,8 @@ class DetectionThresholds(BaseSettings):
     """
 
     calibration_duration_sec: float = 10.0
+    calibration_min_samples: int = 50
+    calibration_max_retries: int = 2
 
     # Adaptive threshold learning (percentile of baseline scores * headroom)
     motion_headroom: float = 1.5

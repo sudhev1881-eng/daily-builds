@@ -26,7 +26,10 @@ export function CalibrationOverlay({
               {countdown}
             </div>
             <p className="font-mono text-xs text-slate-500">
-              Collecting baseline RSSI, CSI amplitude & phase...
+              Keep the room empty. Learning quiet-room RSSI, CSI amplitude & phase...
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-slate-600">
+              If the window is not quiet, calibration restarts automatically.
             </p>
             <div className="mx-auto mt-4 h-1 w-48 overflow-hidden rounded-full bg-slate-800">
               <div

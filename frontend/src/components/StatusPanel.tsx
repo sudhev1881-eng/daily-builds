@@ -1,5 +1,5 @@
 import type { RoomStatus, TrackedPerson } from "../types/sensor";
-import { personColor } from "../types/sensor";
+import { personColor, personLabel } from "../types/sensor";
 
 interface StatusPanelProps {
   roomStatus: RoomStatus;
@@ -11,6 +11,7 @@ interface StatusPanelProps {
   connected: boolean;
   positionError: number | null;
   accuracyRadius: number;
+  calibrationQuality: number | null;
   simulationMode: boolean;
 }
 
@@ -62,6 +63,7 @@ export function StatusPanel({
   connected,
   positionError,
   accuracyRadius,
+  calibrationQuality,
   simulationMode,
 }: StatusPanelProps) {
   const cfg = statusConfig[roomStatus] ?? statusConfig["ROOM EMPTY"];
@@ -96,7 +98,7 @@ export function StatusPanel({
       {people.length > 0 && (
         <div className="mb-4 space-y-1">
           {people.map((p) => {
-            const color = personColor(p.id);
+            const color = personColor(p.id, p.is_user);
             return (
               <div
                 key={p.id}
@@ -107,8 +109,10 @@ export function StatusPanel({
                     className="h-2.5 w-2.5 rounded-full"
                     style={{ backgroundColor: p.moving ? color.main : color.still }}
                   />
-                  <span className="font-mono text-[11px] text-slate-300">
-                    P{p.id + 1}
+                  <span
+                    className={`font-mono text-[11px] ${p.is_user ? "font-semibold text-pink-300" : "text-slate-300"}`}
+                  >
+                    {personLabel(p)}
                   </span>
                 </div>
                 <span className="font-mono text-[10px] text-slate-500">
@@ -135,8 +139,17 @@ export function StatusPanel({
         />
       </div>
 
+      {calibrationQuality !== null && (
+        <p className="mt-3 font-mono text-[10px] text-slate-500">
+          Baseline quality:{" "}
+          <span className={calibrationQuality >= 0.7 ? "text-emerald-400" : "text-amber-400"}>
+            {(calibrationQuality * 100).toFixed(0)}%
+          </span>
+        </p>
+      )}
+
       {timestamp && (
-        <p className="mt-3 font-mono text-[10px] text-slate-600">
+        <p className="mt-1 font-mono text-[10px] text-slate-600">
           Last update: {new Date(timestamp).toLocaleTimeString()}
         </p>
       )}

@@ -1,11 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MouseEvent } from "react";
 import type {
   HeatmapCell,
   RoomConfig,
   TrackedPerson,
   TrailPoint,
 } from "../types/sensor";
-import { personColor } from "../types/sensor";
+import { personColor, personLabel } from "../types/sensor";
 
 interface RoomVisualizationProps {
   room: RoomConfig;
@@ -14,6 +14,8 @@ interface RoomVisualizationProps {
   heatmap: HeatmapCell[];
   movementDetected: boolean;
   accuracyRadius: number;
+  clickToWalk: boolean;
+  onRoomClick?: (x: number, y: number) => void;
 }
 
 const PADDING = 48;
@@ -36,6 +38,8 @@ export function RoomVisualization({
   heatmap,
   movementDetected,
   accuracyRadius,
+  clickToWalk,
+  onRoomClick,
 }: RoomVisualizationProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -175,7 +179,7 @@ export function RoomVisualization({
     }
     for (const [pid, points] of byPerson) {
       if (points.length < 2) continue;
-      const color = personColor(pid);
+      const color = personColor(pid, points[0].isUser);
       ctx.beginPath();
       ctx.strokeStyle = `rgba(${color.glow},0.25)`;
       ctx.lineWidth = 1.5;
@@ -224,7 +228,7 @@ export function RoomVisualization({
     const activeIds = new Set<number>();
     for (const person of p.people) {
       activeIds.add(person.id);
-      const color = personColor(person.id);
+      const color = personColor(person.id, person.is_user);
 
       let smooth = smoothRef.current.get(person.id);
       if (!smooth) {
@@ -266,11 +270,11 @@ export function RoomVisualization({
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Person label (P1, P2, ...)
-      ctx.fillStyle = "#cbd5e1";
-      ctx.font = "9px JetBrains Mono";
+      // Person label (YOU / P1 / P2 ...)
+      ctx.fillStyle = person.is_user ? "#f9a8d4" : "#cbd5e1";
+      ctx.font = person.is_user ? "bold 9px JetBrains Mono" : "9px JetBrains Mono";
       ctx.textAlign = "center";
-      ctx.fillText(`P${person.id + 1}`, pos.x, pos.y - 14);
+      ctx.fillText(personLabel(person), pos.x, pos.y - 14);
 
       if (person.direction !== null && person.moving) {
         const ax = pos.x + Math.cos(person.direction) * 18;
@@ -321,6 +325,23 @@ export function RoomVisualization({
     syncLayout(true);
   }, [room.width, room.height, room.router.x, room.router.y, room.receiver.x, room.receiver.y]);
 
+  function handleCanvasClick(e: MouseEvent<HTMLCanvasElement>) {
+    if (!clickToWalk || !onRoomClick) return;
+    const canvas = canvasRef.current;
+    const layout = layoutRef.current;
+    if (!canvas || !layout) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const r = roomRef.current;
+
+    const wx = (px - layout.offsetX) / layout.scale;
+    const wy = r.height - (py - layout.offsetY) / layout.scale;
+    if (wx < 0 || wy < 0 || wx > r.width || wy > r.height) return;
+    onRoomClick(wx, wy);
+  }
+
   return (
     <div
       ref={containerRef}
@@ -330,8 +351,18 @@ export function RoomVisualization({
         <span className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
           Room Map
         </span>
+        {clickToWalk && (
+          <span className="ml-2 font-mono text-[10px] text-pink-400/80">
+            click anywhere to walk there
+          </span>
+        )}
       </div>
-      <canvas ref={canvasRef} className="block h-full w-full" style={{ touchAction: "none" }} />
+      <canvas
+        ref={canvasRef}
+        className="block h-full w-full"
+        style={{ touchAction: "none", cursor: clickToWalk ? "crosshair" : "default" }}
+        onClick={handleCanvasClick}
+      />
     </div>
   );
 }

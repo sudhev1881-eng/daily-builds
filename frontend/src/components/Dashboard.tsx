@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { API_URL } from "../config";
 import { useWebSocket } from "../hooks/useWebSocket";
 import type { HeatmapCell, RoomStatus, TrailPoint } from "../types/sensor";
 import {
@@ -41,6 +42,27 @@ export function Dashboard() {
   const personMoving = roomStatus === "HUMAN MOVING";
   const people = personVisible && !isCalibrating ? (reading?.people ?? []) : [];
   const personCount = reading?.person_count ?? 0;
+  const userInRoom = people.some((p) => p.is_user);
+
+  const enterRoom = useCallback(() => {
+    fetch(`${API_URL}/user/enter`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const leaveRoom = useCallback(() => {
+    fetch(`${API_URL}/user/leave`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const walkTo = useCallback((x: number, y: number) => {
+    fetch(`${API_URL}/user/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x, y }),
+    }).catch(() => {});
+  }, []);
+
+  const recalibrate = useCallback(() => {
+    fetch(`${API_URL}/calibrate`, { method: "POST" }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!reading) return;
@@ -71,6 +93,7 @@ export function Dashboard() {
             timestamp: Date.now(),
             intensity: reading.movement_intensity / 100,
             personId: person.id,
+            isUser: person.is_user,
           });
 
           const cellX = Math.round(person.x * 2) / 2;
@@ -139,7 +162,30 @@ export function Dashboard() {
               heatmap={heatmap}
               movementDetected={personMoving}
               accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
+              clickToWalk={userInRoom}
+              onRoomClick={walkTo}
             />
+            <div className="absolute top-2 right-2 z-10 flex gap-2">
+              {!isCalibrating && (
+                <button
+                  onClick={userInRoom ? leaveRoom : enterRoom}
+                  className={`rounded-md px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors ${
+                    userInRoom
+                      ? "bg-pink-500/20 text-pink-300 hover:bg-pink-500/30"
+                      : "bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+                  }`}
+                >
+                  {userInRoom ? "Leave Room" : "Enter Room"}
+                </button>
+              )}
+              <button
+                onClick={recalibrate}
+                disabled={isCalibrating}
+                className="rounded-md bg-sky-500/20 px-3 py-1.5 font-mono text-[11px] font-semibold text-sky-300 transition-colors hover:bg-sky-500/30 disabled:opacity-40"
+              >
+                Recalibrate
+              </button>
+            </div>
             <CalibrationOverlay
               remaining={reading?.calibration_remaining_sec ?? null}
               roomStatus={roomStatus}
@@ -164,6 +210,7 @@ export function Dashboard() {
             connected={connected}
             positionError={reading?.position_error_m ?? null}
             accuracyRadius={reading?.accuracy_radius_m ?? 0.5}
+            calibrationQuality={reading?.calibration_quality ?? null}
             simulationMode={simulationMode}
           />
           <MovementMeter
