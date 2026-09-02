@@ -191,6 +191,39 @@ export function useAlarmGame() {
     [question, lockAnswers, status, streak, asked],
   );
 
+  const applyDemo = useCallback((mode: string) => {
+    if (mode === "armed") {
+      setAlarmAt(Date.now() + 8 * 60 * 1000);
+      setStatus("ARMED");
+      return;
+    }
+    if (mode === "ring") {
+      setStatus("RINGING");
+      setTimerEnd(Date.now() + 45_000);
+      chaseStarted.current = Date.now();
+      alarmAudio.start();
+      return;
+    }
+    if (mode === "challenge") {
+      setStatus("CHALLENGE");
+      setTimerEnd(Date.now() + 120_000);
+      setQuestion(nextQuestion([]));
+      return;
+    }
+    if (mode === "win") {
+      alarmAudio.stop();
+      setStatus("DEFEATED");
+      setStats({
+        chaseMs: 18400,
+        questionsAnswered: 7,
+        wrongAnswers: 2,
+        longestStreak: 5,
+        buttonEscapes: 6,
+        fakeClicks: 2,
+      });
+    }
+  }, []);
+
   const reset = useCallback(() => {
     alarmAudio.stop();
     setStatus("OFF");
@@ -249,6 +282,7 @@ export function useAlarmGame() {
     noteFake,
     answer,
     reset,
+    applyDemo,
   };
 }
 

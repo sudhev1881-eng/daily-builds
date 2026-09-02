@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Background } from "./components/Background";
 import { ChallengeScreen } from "./components/ChallengeScreen";
 import { HomeScreen } from "./components/HomeScreen";
@@ -10,6 +11,13 @@ import { usePointer } from "./hooks/usePointer";
 export default function App() {
   const game = useAlarmGame();
   const pointer = usePointer();
+
+  useEffect(() => {
+    const mode = new URLSearchParams(window.location.search).get("demo");
+    if (mode) game.applyDemo(mode);
+    // run once on mount for review screenshots / QA
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fx =
     game.screenFx === "shake"
