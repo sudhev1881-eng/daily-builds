@@ -141,3 +141,15 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Python
+__pycache__/
+*.py[cod]
+backend/venv/
+backend/static/
+.venv/
+
+# Deployment runtime artifacts
+.bin/
+.run/
+PUBLIC_URL.txt

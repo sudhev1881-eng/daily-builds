@@ -1,0 +1,13 @@
+# Render Blueprint — deploy as a single web service (API + WebSocket + static frontend).
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: wifi-sensing-dashboard
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: WIFI_SENSE_SIMULATION_MODE
+        value: "true"
+      - key: PORT
+        value: "8000"
