@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { alarmAudio } from "../audio/AlarmAudio";
 import { VICTORY_LINES } from "../data/ragebait";
 import type { AlarmGame } from "../game/useAlarmGame";
 import { MagneticButton } from "./MagneticButton";
@@ -32,6 +34,16 @@ function Confetti() {
 export function VictoryScreen({ game }: { game: AlarmGame }) {
   const s = game.stats;
   const chase = (s.chaseMs / 1000).toFixed(1);
+
+  useEffect(() => {
+    const first = VICTORY_LINES[0];
+    if (first) alarmAudio.speak(first);
+    const id = window.setTimeout(() => {
+      const second = VICTORY_LINES[1];
+      if (second) alarmAudio.speak(second);
+    }, 2400);
+    return () => window.clearTimeout(id);
+  }, []);
   return (
     <div className="relative z-10 mx-auto flex min-h-dvh max-w-lg flex-col justify-center gap-5 px-4 py-10">
       <Confetti />

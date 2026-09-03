@@ -34,7 +34,12 @@ export function RingingScreen({
         <p className="mt-2 text-sm font-bold uppercase tracking-[0.35em] text-amber-200">
           Catch me if you can
         </p>
-        {game.panic && (
+        {game.locked && (
+          <div className="mt-3 rounded-full bg-black/70 px-4 py-1 text-xs font-black tracking-[0.2em] text-amber-200 ring-2 ring-rose-500/70">
+            🔒 UNSTOPPABLE · {formatMs(game.lockLeft)}
+          </div>
+        )}
+        {game.panic && !game.locked && (
           <div className="mt-3 rounded-full bg-red-600 px-4 py-1 text-xs font-black tracking-[0.25em] text-white shadow-[0_0_24px_rgba(255,40,60,0.7)]">
             PANIC MODE
           </div>
@@ -44,10 +49,12 @@ export function RingingScreen({
           style={game.soClose ? { animation: "shake 0.4s ease" } : undefined}
           aria-live="polite"
         >
-          {game.soClose ? "SO CLOSE" : formatMs(game.timerLeft)}
+          {game.soClose ? (game.locked ? "TOO EARLY" : "SO CLOSE") : formatMs(game.timerLeft)}
         </div>
         <p className="mt-2 max-w-xs text-xs text-white/50">
-          The button can smell fear. On a phone, hover your finger near it — it will still run.
+          {game.locked
+            ? "The STOP button will not work for a full minute. The dog is in charge."
+            : "The button can smell fear. On a phone, hover your finger near it — it will still run."}
         </p>
       </div>
 

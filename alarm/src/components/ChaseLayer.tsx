@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { CHASE_BAIT, FAKE_BAIT, pick, pickStyle } from "../data/ragebait";
+import { alarmAudio } from "../audio/AlarmAudio";
+import { CHASE_BAIT, FAKE_BAIT, LOCK_BAIT, pick, pickStyle } from "../data/ragebait";
 import type { AlarmGame } from "../game/useAlarmGame";
 import { FAKE_AFTER_MS, type BubbleStyle, type FakeKind } from "../game/types";
 import type { PointerState } from "../hooks/usePointer";
@@ -46,9 +47,17 @@ export function ChaseLayer({ game, pointer }: Props) {
   const noteEscape = useRef(game.noteEscape);
   const panicRef = useRef(game.panic);
   const caught = useRef(game.caughtStop);
+  const lockedRef = useRef(game.locked);
+  const lastSpeak = useRef(0);
   noteEscape.current = game.noteEscape;
   panicRef.current = game.panic;
   caught.current = game.caughtStop;
+  lockedRef.current = game.locked;
+
+  const speakTroll = (text: string) => {
+    lastSpeak.current = performance.now();
+    alarmAudio.speak(text);
+  };
 
   useEffect(() => {
     if (!bubble) return;
@@ -73,6 +82,7 @@ export function ChaseLayer({ game, pointer }: Props) {
     const tick = () => {
       const p = pointer.current;
       const panic = panicRef.current;
+      const locked = lockedRef.current;
       const pad = 12;
       const maxX = window.innerWidth - BTN_W - pad;
       const maxY = window.innerHeight - BTN_H - pad;
@@ -82,17 +92,29 @@ export function ChaseLayer({ game, pointer }: Props) {
       const dy = cy - p.y;
       const dist = Math.hypot(dx, dy);
       const coarse = p.coarse;
-      const danger = panic ? (coarse ? 128 : 168) : coarse ? 92 : 118;
+      const danger = locked
+        ? coarse
+          ? 150
+          : 196
+        : panic
+          ? coarse
+            ? 128
+            : 168
+          : coarse
+            ? 92
+            : 118;
 
       if (p.active && dist < danger && !hesitating.current) {
         if (!hesitated.current && dist < danger * 0.78) {
           hesitated.current = true;
           hesitating.current = true;
+          const line = pick(CHASE_BAIT);
           setBubble({
-            text: pick(CHASE_BAIT),
+            text: line,
             styleKind: pickStyle(),
             life: performance.now() + 920,
           });
+          if (performance.now() - lastSpeak.current > 1100) speakTroll(line);
           window.setTimeout(
             () => {
               hesitating.current = false;
@@ -114,17 +136,19 @@ export function ChaseLayer({ game, pointer }: Props) {
           if (Math.abs(dx) > Math.abs(dy)) oy *= 0.42;
           else ox *= 0.42;
           const force = (danger - dist) / danger;
-          const mag = panic ? 5.1 : coarse ? 2.1 : 2.7;
+          const mag = locked ? 6.4 : panic ? 5.1 : coarse ? 2.1 : 2.7;
           vel.current.x += ox * force * mag;
           vel.current.y += oy * force * mag;
           if (dist < 50 && performance.now() - lastEscape.current > 400) {
             noteEscape.current();
             lastEscape.current = performance.now();
+            const line = pick(CHASE_BAIT);
             setBubble({
-              text: pick(CHASE_BAIT),
+              text: line,
               styleKind: pickStyle(),
               life: performance.now() + 720,
             });
+            if (performance.now() - lastSpeak.current > 1100) speakTroll(line);
           }
         }
       }
@@ -138,11 +162,13 @@ export function ChaseLayer({ game, pointer }: Props) {
         vel.current.x = 0;
         vel.current.y = 0;
         noteEscape.current();
+        const line = pick(CHASE_BAIT);
         setBubble({
-          text: pick(CHASE_BAIT),
+          text: line,
           styleKind: "toast",
           life: performance.now() + 700,
         });
+        speakTroll(line);
       }
 
       if (!hesitating.current) {
@@ -214,6 +240,7 @@ export function ChaseLayer({ game, pointer }: Props) {
         : btn.kind === "really"
           ? "ഇത്ര പെട്ടെന്ന് വിശ്വസിച്ചോ? 😭"
           : "ഇത് ആണ് ശരിയെന്ന് തോന്നിയോ? 🥲";
+    speakTroll(line);
     setFreeze(line);
     window.setTimeout(() => {
       setFreeze(null);
@@ -270,6 +297,16 @@ export function ChaseLayer({ game, pointer }: Props) {
         aria-label="Stop alarm"
         onPointerDown={(e) => {
           e.stopPropagation();
+          if (lockedRef.current) {
+            const line = pick(LOCK_BAIT);
+            speakTroll(line);
+            setFreeze(line);
+            noteEscape.current();
+            vel.current.x += (Math.random() > 0.5 ? 1 : -1) * 28;
+            vel.current.y += (Math.random() > 0.5 ? 1 : -1) * 22;
+            window.setTimeout(() => setFreeze(null), 720);
+            return;
+          }
           caught.current();
         }}
       >

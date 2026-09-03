@@ -5,6 +5,7 @@ import { pick, TRICK_REVEAL, WRONG_BAIT } from "../data/ragebait";
 import { useNow } from "../hooks/useNow";
 import {
   BASE_TIMER_MS,
+  LOCK_MS,
   PENALTY_MS,
   RESULT_BEAT_MS,
   STREAK_GOAL,
@@ -46,6 +47,7 @@ export function useAlarmGame() {
   const [beat, setBeat] = useState(0);
   const [ringIntro, setRingIntro] = useState(false);
   const [penaltyFlash, setPenaltyFlash] = useState(false);
+  const [lockUntil, setLockUntil] = useState(0);
   const chaseStarted = useRef<number | null>(null);
   const timers = useRef<number[]>([]);
   const [stats, setStats] = useState<AlarmStats>(emptyStats);
@@ -80,6 +82,8 @@ export function useAlarmGame() {
   }, [alarmAt, now, status]);
 
   const timerLeft = timerEnd ? Math.max(0, timerEnd - now) : 0;
+  const lockLeft = status === "RINGING" ? Math.max(0, lockUntil - now) : 0;
+  const locked = lockLeft > 0;
   const panic = status === "RINGING" && timerLeft > 0 && timerLeft <= 30_000;
   const arming = armPhase === "press" || armPhase === "dim" || armPhase === "expand";
 
@@ -88,6 +92,7 @@ export function useAlarmGame() {
       setStatus("RINGING");
       setTimerEnd(Date.now() + BASE_TIMER_MS);
       chaseStarted.current = Date.now();
+      setLockUntil(Date.now() + LOCK_MS);
       alarmAudio.start();
       setRingIntro(true);
       setScreenFx("shake");
@@ -142,6 +147,7 @@ export function useAlarmGame() {
 
   const caughtStop = useCallback(() => {
     if (status !== "RINGING") return;
+    if (Date.now() < lockUntil) return;
     const started = chaseStarted.current ?? Date.now();
     setStats((s) => ({ ...s, chaseMs: Date.now() - started }));
     setStatus("CHALLENGE");
@@ -153,7 +159,7 @@ export function useAlarmGame() {
     setRevealTrick(false);
     setRingIntro(false);
     alarmAudio.tap();
-  }, [status]);
+  }, [status, lockUntil]);
 
   const noteEscape = useCallback(() => {
     setStats((s) => ({ ...s, buttonEscapes: s.buttonEscapes + 1 }));
@@ -189,7 +195,9 @@ export function useAlarmGame() {
         }));
         if (question.trick) {
           setRevealTrick(true);
-          setBaitLine(pick(TRICK_REVEAL));
+          const line = pick(TRICK_REVEAL);
+          setBaitLine(line);
+          alarmAudio.speak(line);
         }
         later(RESULT_BEAT_MS, () => {
           if (nextStreak >= STREAK_GOAL) {
@@ -215,7 +223,9 @@ export function useAlarmGame() {
         alarmAudio.fail();
         setLastResult("wrong");
         setStreak(0);
-        setBaitLine(pick(WRONG_BAIT));
+        const line = pick(WRONG_BAIT);
+        setBaitLine(line);
+        alarmAudio.speak(line);
         setScreenFx("shake");
         setPenaltyFlash(true);
         setTimerEnd((end) => (end ?? Date.now()) + PENALTY_MS);
@@ -235,55 +245,70 @@ export function useAlarmGame() {
     [question, lockAnswers, status, streak, asked, later],
   );
 
-  const applyDemo = useCallback((mode: string) => {
-    if (mode === "armed") {
-      setAlarmAt(Date.now() + 8 * 60 * 1000);
-      setStatus("ARMED");
-      setArmPhase("done");
-      return;
-    }
-    if (mode === "armed-soon") {
-      setAlarmAt(Date.now() + 95_000);
-      setStatus("ARMED");
-      setArmPhase("done");
-      return;
-    }
-    if (mode === "ring") {
-      setStatus("RINGING");
-      setTimerEnd(Date.now() + 45_000);
-      chaseStarted.current = Date.now();
-      alarmAudio.start();
-      setRingIntro(true);
-      later(1200, () => setRingIntro(false));
-      return;
-    }
-    if (mode === "panic") {
-      setStatus("RINGING");
-      setTimerEnd(Date.now() + 22_000);
-      chaseStarted.current = Date.now();
-      alarmAudio.start();
-      return;
-    }
-    if (mode === "challenge") {
-      setStatus("CHALLENGE");
-      setTimerEnd(Date.now() + 120_000);
-      setQuestion(nextQuestion([]));
-      return;
-    }
-    if (mode === "win") {
-      alarmAudio.stop();
-      setStatus("DEFEATED");
-      setScreenFx("celebrate");
-      setStats({
-        chaseMs: 18400,
-        questionsAnswered: 7,
-        wrongAnswers: 2,
-        longestStreak: 5,
-        buttonEscapes: 6,
-        fakeClicks: 2,
-      });
-    }
-  }, [later]);
+  const applyDemo = useCallback(
+    (mode: string) => {
+      if (mode === "armed") {
+        setAlarmAt(Date.now() + 8 * 60 * 1000);
+        setStatus("ARMED");
+        setArmPhase("done");
+        return;
+      }
+      if (mode === "armed-soon") {
+        setAlarmAt(Date.now() + 95_000);
+        setStatus("ARMED");
+        setArmPhase("done");
+        return;
+      }
+      if (mode === "ring") {
+        setStatus("RINGING");
+        setTimerEnd(Date.now() + 45_000);
+        chaseStarted.current = Date.now();
+        setLockUntil(0);
+        alarmAudio.start();
+        setRingIntro(true);
+        later(1200, () => setRingIntro(false));
+        return;
+      }
+      if (mode === "locked") {
+        setStatus("RINGING");
+        setTimerEnd(Date.now() + BASE_TIMER_MS);
+        chaseStarted.current = Date.now();
+        setLockUntil(Date.now() + LOCK_MS);
+        alarmAudio.start();
+        setRingIntro(true);
+        later(1200, () => setRingIntro(false));
+        return;
+      }
+      if (mode === "panic") {
+        setStatus("RINGING");
+        setTimerEnd(Date.now() + 22_000);
+        chaseStarted.current = Date.now();
+        setLockUntil(0);
+        alarmAudio.start();
+        return;
+      }
+      if (mode === "challenge") {
+        setStatus("CHALLENGE");
+        setTimerEnd(Date.now() + 120_000);
+        setQuestion(nextQuestion([]));
+        return;
+      }
+      if (mode === "win") {
+        alarmAudio.stop();
+        setStatus("DEFEATED");
+        setScreenFx("celebrate");
+        setStats({
+          chaseMs: 18400,
+          questionsAnswered: 7,
+          wrongAnswers: 2,
+          longestStreak: 5,
+          buttonEscapes: 6,
+          fakeClicks: 2,
+        });
+      }
+    },
+    [later],
+  );
 
   const reset = useCallback(() => {
     alarmAudio.stop();
@@ -303,6 +328,7 @@ export function useAlarmGame() {
     setScreenFx("none");
     setRingIntro(false);
     setPenaltyFlash(false);
+    setLockUntil(0);
     chaseStarted.current = null;
     setStats(emptyStats());
   }, [clearTimers]);
@@ -324,6 +350,8 @@ export function useAlarmGame() {
     screenFx,
     remainingToAlarm,
     timerLeft,
+    lockLeft,
+    locked,
     panic,
     streak,
     question,

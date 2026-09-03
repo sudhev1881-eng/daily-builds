@@ -1,5 +1,6 @@
 import type { AlarmGame } from "../game/useAlarmGame";
 import { MagneticButton } from "./MagneticButton";
+import { alarmAudio } from "../audio/AlarmAudio";
 
 export function SettingsPanel({ game }: { game: AlarmGame }) {
   if (!game.settingsOpen) return null;
@@ -56,9 +57,19 @@ export function SettingsPanel({ game }: { game: AlarmGame }) {
           />
         </label>
         <p className="mt-4 text-[11px] leading-relaxed text-white/40">
-          Beeps are generated in your browser. They pulse with the red flashes. Turn it down if
-          your neighbors already hate you.
+          Ringtone is a barking dog, generated in your browser. Malayalam trolls are read out
+          loud when you click them. Turn it down if your neighbors already hate you.
         </p>
+        <MagneticButton
+          type="button"
+          className="mt-4 w-full rounded-2xl border border-white/15 bg-white/5 py-2 text-sm"
+          onClick={() => {
+            alarmAudio.previewBark();
+            alarmAudio.speak("പിടിക്കാൻ പറ്റുമെങ്കിൽ പിടിക്കടാ");
+          }}
+        >
+          Test bark + troll voice
+        </MagneticButton>
       </div>
     </div>
   );
