@@ -74,7 +74,7 @@ export default function App() {
         onClick={() => game.setSettingsOpen(true)}
         aria-label="Volume and settings"
       >
-        🔊 {Math.round(game.volume * 100)}
+        🔊 VOL {Math.round(game.volume * 100)}
       </MagneticButton>
     </div>
   );

@@ -34,6 +34,11 @@ export function RingingScreen({
         <p className="mt-2 text-sm font-bold uppercase tracking-[0.35em] text-amber-200">
           Catch me if you can
         </p>
+        {game.panic && (
+          <div className="mt-3 rounded-full bg-red-600 px-4 py-1 text-xs font-black tracking-[0.25em] text-white shadow-[0_0_24px_rgba(255,40,60,0.7)]">
+            PANIC MODE
+          </div>
+        )}
         <div
           className={`clock-font mt-5 text-5xl font-black ${game.soClose ? "text-amber-200" : "text-white"}`}
           style={game.soClose ? { animation: "shake 0.4s ease" } : undefined}

@@ -246,12 +246,6 @@ export function ChaseLayer({ game, pointer }: Props) {
 
   return (
     <>
-      {game.panic && (
-        <div className="pointer-events-none fixed top-16 left-1/2 z-20 -translate-x-1/2 rounded-full bg-red-600 px-4 py-1 text-xs font-black tracking-[0.25em] text-white shadow-[0_0_24px_rgba(255,40,60,0.7)]">
-          PANIC MODE
-        </div>
-      )}
-
       {fakes.map((f) => (
         <button
           key={f.id}

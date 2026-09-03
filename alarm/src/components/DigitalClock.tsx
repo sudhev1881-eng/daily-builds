@@ -21,7 +21,7 @@ export function DigitalClock({ now, large, pulse }: Props) {
     <div className={`hero-clock relative mx-auto text-center ${pulse ? "fx-pulse" : ""}`}>
       <svg
         viewBox="0 0 120 120"
-        className="pointer-events-none absolute left-1/2 top-1/2 h-[135%] w-[135%] -translate-x-1/2 -translate-y-1/2 opacity-70"
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[118%] w-[118%] -translate-x-1/2 -translate-y-1/2 opacity-70"
         aria-hidden
       >
         <circle cx="60" cy="60" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />

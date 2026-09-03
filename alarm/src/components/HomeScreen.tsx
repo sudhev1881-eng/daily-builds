@@ -40,7 +40,6 @@ export function HomeScreen({ game }: { game: AlarmGame }) {
           Settings
         </MagneticButton>
       </header>
-      <p className="-mt-3 text-[11px] text-white/35">There is no setting for escaping.</p>
 
       <DigitalClock
         now={game.now}
