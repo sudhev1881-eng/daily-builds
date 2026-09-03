@@ -77,12 +77,53 @@ export class AlarmAudio {
   }
 
   speak(text: string) {
-    if (typeof speechSynthesis === "undefined") return;
     if (this.volume <= 0.01) return;
     const clean = stripEmoji(text);
     if (!clean) return;
     void this.resume();
+    this.silence();
+    const url = `/api/tts?q=${encodeURIComponent(clean)}`;
+    const audio = new Audio();
+    audio.volume = Math.max(0.3, this.volume);
+    audio.src = url;
+    audio.setAttribute("data-troll-tts", "1");
+    audio.style.display = "none";
+    document.body.appendChild(audio);
+    this.ttsAudio = audio;
+    this.speaking = true;
+    audio.onended = () => {
+      this.speaking = false;
+      audio.remove();
+    };
+    audio.onerror = () => {
+      this.speaking = false;
+      audio.remove();
+      this.speakLocal(clean);
+    };
+    void audio.play().catch(() => {
+      this.speaking = false;
+      audio.remove();
+      this.speakLocal(clean);
+    });
+  }
+
+  silence() {
+    if (this.ttsAudio) {
+      this.ttsAudio.pause();
+      this.ttsAudio.remove();
+      this.ttsAudio.src = "";
+      this.ttsAudio = null;
+    }
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+    this.speaking = false;
+  }
+
+  private ttsAudio: HTMLAudioElement | null = null;
+
+  private speakLocal(clean: string) {
+    if (typeof speechSynthesis === "undefined") return;
     speechSynthesis.cancel();
+    speechSynthesis.resume();
     const u = new SpeechSynthesisUtterance(clean);
     u.lang = "ml-IN";
     u.rate = 1.02;
@@ -91,9 +132,8 @@ export class AlarmAudio {
     const voices = speechSynthesis.getVoices();
     const ml = voices.find((v) => v.lang.toLowerCase().startsWith("ml"));
     const hi = voices.find((v) => v.lang.toLowerCase().startsWith("hi"));
-    if (ml) {
-      u.voice = ml;
-    } else if (hi) {
+    if (ml) u.voice = ml;
+    else if (hi) {
       u.voice = hi;
       u.lang = "hi-IN";
     }
@@ -105,11 +145,6 @@ export class AlarmAudio {
       this.speaking = false;
     };
     speechSynthesis.speak(u);
-  }
-
-  silence() {
-    if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
-    this.speaking = false;
   }
 
   private bark() {
